@@ -17,7 +17,6 @@ import os
 import re
 import sys
 import time
-import html
 import threading
 import datetime as dt
 from typing import Any
@@ -722,6 +721,14 @@ def run_webhook(waha: "Waha") -> int:
     except KeyboardInterrupt:
         log("bye")
     return 0
+
+
+def _safe(fn, *a) -> None:
+    """Run a handler, logging (not raising) so a worker thread never dies silently."""
+    try:
+        fn(*a)
+    except Exception as e:  # noqa: BLE001
+        log("handler error:", repr(e))
 
 
 # ---------------------------------------------------------------- poll mode
