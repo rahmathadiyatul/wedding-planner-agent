@@ -256,7 +256,20 @@ def llm_chat(messages: list[dict]) -> str:
         headers={"Authorization": f"Bearer {LLM_API_KEY}", "content-type": "application/json"},
         timeout=HTTP_TIMEOUT,
     )
-    convo = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
+    # Give the model today's date (so "this year"/"latest" resolve correctly) and
+    # push it to verify time-sensitive facts with web_search instead of guessing.
+    try:
+        from zoneinfo import ZoneInfo
+        now = dt.datetime.now(ZoneInfo(os.environ.get("TZ_NAME", "Asia/Jakarta")))
+    except Exception:  # noqa: BLE001
+        now = dt.datetime.utcnow()
+    grounding = (
+        f"Today's date is {now:%A, %d %B %Y}. "
+        "When the user asks about 'this year', 'latest', recent news, scores, prices, "
+        "or current events, call web_search first and answer from the results; "
+        "do not rely on memory for anything time-sensitive."
+    )
+    convo = [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + grounding}] + messages
     for _ in range(5):  # cap tool-call rounds
         resp = client.post(
             "/chat/completions",
