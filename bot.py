@@ -65,6 +65,18 @@ SYSTEM_PROMPT = os.environ.get(
 
 HTTP_TIMEOUT = float(os.environ.get("HTTP_TIMEOUT", "30"))
 
+# Mode: "poll" (default; works anywhere that can reach WAHA) or "webhook"
+# (WAHA pushes to us -- real-time, but needs a public URL WAHA can POST to, set
+# via PUBLIC_WEBHOOK_URL). Note: webhooks ride the same WhatsApp receive stream
+# as polling, so neither survives a WAHA/GOWS backend hang.
+BOT_MODE = os.environ.get("BOT_MODE", "poll").strip().lower()
+WEBHOOK_HOST = os.environ.get("WEBHOOK_HOST", "0.0.0.0")
+WEBHOOK_PORT = int(os.environ.get("WEBHOOK_PORT", "8080"))
+WEBHOOK_PATH = os.environ.get("WEBHOOK_PATH", "/webhook")
+# message.any includes OUR OWN messages (fromMe) -- needed because triggers come
+# from the linked number itself. Set to "message" to only react to others.
+WEBHOOK_EVENTS = [e.strip() for e in os.environ.get("WEBHOOK_EVENTS", "message.any").split(",") if e.strip()]
+
 
 def log(*a: Any) -> None:
     print(dt.datetime.now().strftime("%H:%M:%S"), *a, flush=True)
@@ -267,39 +279,145 @@ def build_history(messages: list[dict]) -> list[dict]:
     return out[-HISTORY_LIMIT:]
 
 
-# ---------------------------------------------------------------- main loop
+# ---------------------------------------------------------------- shared handling
 
-def main() -> int:
-    if not WAHA_API_KEY:
-        log("FATAL: WAHA_API_KEY not set")
-        return 2
-    waha = Waha(WAHA_BASE_URL, WAHA_API_KEY, WAHA_SESSION)
+_seen_ids: set[str] = set()
 
+
+def _already_handled(mid: str | None) -> bool:
+    """Idempotency guard so a message is answered at most once."""
+    if not mid:
+        return False
+    if mid in _seen_ids:
+        return True
+    _seen_ids.add(mid)
+    if len(_seen_ids) > 4000:
+        _seen_ids.intersection_update(list(_seen_ids)[-2000:])
+    return False
+
+
+def handle_trigger(waha: "Waha", chat_id: str, prompt: str) -> None:
+    """Fetch context, ask the LLM, and reply into the chat."""
+    log("trigger:", prompt)
+    history = []
     try:
-        log("WAHA version:", waha.version())
+        msgs = waha.get_messages(chat_id, HISTORY_LIMIT)
+        if isinstance(msgs, list):
+            history = build_history(msgs)
     except Exception as e:  # noqa: BLE001
-        log("FATAL: cannot reach/auth WAHA:", e)
-        return 2
-
-    if not GROUP_CHAT_ID:
-        log("GROUP_CHAT_ID not set -- listing groups so you can pick one:")
-        for g in waha.list_groups():
-            gid = g.get("id", {})
-            gid = gid.get("_serialized") if isinstance(gid, dict) else gid
-            log("  ", gid, "|", (g.get("name") or g.get("subject") or "?"))
-        return 0
-
-    if not LLM_API_KEY:
-        log("FATAL: LLM_API_KEY not set")
-        return 2
-
-    log(f"Watching {GROUP_CHAT_ID}, trigger='{TRIGGER_PREFIX}', every {POLL_INTERVAL}s")
-    seen: set[str] = set()
-    # Baseline: mark everything already in the group as seen, so we only react to NEW triggers.
+        log("warn: history fetch failed:", e)
+    history.append({"role": "user", "content": prompt})
     try:
+        answer = llm_chat(history)
+    except Exception as e:  # noqa: BLE001
+        answer = f"(LLM error: {e})"
+    log("reply:", answer[:120])
+    try:
+        waha.send_text(chat_id, REPLY_PREFIX + answer)
+    except Exception as e:  # noqa: BLE001
+        log("send error:", e)
+
+
+def process_event(waha: "Waha", payload: dict) -> None:
+    """Handle one WAHA message payload (webhook) or REST message (poll)."""
+    if not isinstance(payload, dict):
+        return
+    mid = payload.get("id")
+    if isinstance(mid, dict):
+        mid = mid.get("_serialized") or mid.get("id")
+    chat_id = payload.get("from") or payload.get("chatId") or GROUP_CHAT_ID
+    text = msg_text(payload)
+    if not text or not text.startswith(TRIGGER_PREFIX):
+        return
+    # Don't answer our own bot replies (they carry REPLY_PREFIX, not the trigger),
+    # but guard anyway in case REPLY_PREFIX ever overlaps the trigger.
+    if payload.get("fromMe") and text.startswith(REPLY_PREFIX.strip()):
+        return
+    if GROUP_CHAT_ID and chat_id != GROUP_CHAT_ID:
+        return  # only our watched group
+    if _already_handled(mid):
+        return
+    prompt = text[len(TRIGGER_PREFIX):].strip()
+    handle_trigger(waha, chat_id, prompt)
+
+
+# ---------------------------------------------------------------- webhook mode
+
+def run_webhook(waha: "Waha") -> int:
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    # Register our webhook on the WAHA session (PUT config.webhooks).
+    base = os.environ.get("PUBLIC_WEBHOOK_URL", "").rstrip("/")
+    if not base:
+        log("FATAL: PUBLIC_WEBHOOK_URL not set (the public URL WAHA should POST to)")
+        return 2
+    hook_url = base + WEBHOOK_PATH
+    try:
+        cfg = {"config": {"webhooks": [{"url": hook_url, "events": WEBHOOK_EVENTS}]}}
+        waha._request("PUT", f"/api/sessions/{WAHA_SESSION}", json=cfg)
+        log(f"registered webhook -> {hook_url} events={WEBHOOK_EVENTS}")
+    except Exception as e:  # noqa: BLE001
+        log("warn: could not register webhook (set it manually?):", e)
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):  # silence default stderr logging
+            pass
+
+        def _ok(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def do_GET(self):
+            self._ok()  # health check
+
+        def do_POST(self):
+            try:
+                n = int(self.headers.get("content-length", 0))
+                body = self.rfile.read(n) if n else b"{}"
+                self._ok()  # ack fast; process after
+            except Exception:  # noqa: BLE001
+                try:
+                    self._ok()
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            try:
+                data = json.loads(body or b"{}")
+            except Exception:  # noqa: BLE001
+                return
+            event = data.get("event")
+            payload = data.get("payload") or {}
+            if event in ("message", "message.any"):
+                threading.Thread(
+                    target=lambda: _safe(process_event, waha, payload), daemon=True
+                ).start()
+
+    srv = ThreadingHTTPServer((WEBHOOK_HOST, WEBHOOK_PORT), Handler)
+    log(f"webhook server on {WEBHOOK_HOST}:{WEBHOOK_PORT}{WEBHOOK_PATH}  (trigger='{TRIGGER_PREFIX}')")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        log("bye")
+    return 0
+
+
+def _safe(fn, *a) -> None:
+    try:
+        fn(*a)
+    except Exception as e:  # noqa: BLE001
+        log("handler error:", e)
+
+
+# ---------------------------------------------------------------- poll mode
+
+def run_poll(waha: "Waha") -> int:
+    log(f"polling {GROUP_CHAT_ID}, trigger='{TRIGGER_PREFIX}', every {POLL_INTERVAL}s")
+    try:  # baseline so we only react to NEW messages
         for m in waha.get_messages(GROUP_CHAT_ID, HISTORY_LIMIT):
-            if m.get("id"):
-                seen.add(m["id"])
+            if isinstance(m, dict):
+                _already_handled(m.get("id"))
     except Exception as e:  # noqa: BLE001
         log("warn: baseline fetch failed:", e)
 
@@ -310,45 +428,43 @@ def main() -> int:
             log("poll error:", e)
             time.sleep(POLL_INTERVAL)
             continue
-
-        # WAHA can return a non-list (e.g. an error dict) during transient states.
-        if not isinstance(messages, list):
+        if isinstance(messages, list):
+            for m in messages:
+                _safe(process_event, waha, m)
+        else:
             log("poll: unexpected response:", str(messages)[:160])
-            time.sleep(POLL_INTERVAL)
-            continue
-
-        for m in messages:
-            # Never let one bad message kill the loop.
-            try:
-                if not isinstance(m, dict):
-                    continue
-                mid = m.get("id")
-                if not mid or mid in seen:
-                    continue
-                seen.add(mid)
-                text = msg_text(m)
-                if not text or not text.startswith(TRIGGER_PREFIX):
-                    continue
-                prompt = text[len(TRIGGER_PREFIX):].strip()
-                log("trigger:", prompt)
-                history = build_history(messages)
-                history.append({"role": "user", "content": prompt})
-                try:
-                    answer = llm_chat(history)
-                except Exception as e:  # noqa: BLE001
-                    answer = f"(LLM error: {e})"
-                log("reply:", answer[:120])
-                try:
-                    waha.send_text(GROUP_CHAT_ID, REPLY_PREFIX + answer)
-                except Exception as e:  # noqa: BLE001
-                    log("send error:", e)
-            except Exception as e:  # noqa: BLE001
-                log("message handling error:", e)
-
-        # Cap memory of seen ids.
-        if len(seen) > 2000:
-            seen = set(list(seen)[-1000:])
         time.sleep(POLL_INTERVAL)
+
+
+# ---------------------------------------------------------------- entrypoint
+
+def main() -> int:
+    if not WAHA_API_KEY:
+        log("FATAL: WAHA_API_KEY not set")
+        return 2
+    waha = Waha(WAHA_BASE_URL, WAHA_API_KEY, WAHA_SESSION)
+    try:
+        log("WAHA version:", waha.version())
+    except Exception as e:  # noqa: BLE001
+        log("FATAL: cannot reach/auth WAHA:", e)
+        return 2
+
+    if not GROUP_CHAT_ID:
+        log("GROUP_CHAT_ID not set -- listing groups so you can pick one:")
+        for g in waha.list_groups():
+            jid = g.get("JID") or g.get("id")
+            if isinstance(jid, dict):
+                jid = jid.get("_serialized")
+            log("  ", jid, "|", (g.get("Name") or g.get("name") or g.get("subject") or "?"))
+        return 0
+
+    if not LLM_API_KEY:
+        log("FATAL: LLM_API_KEY not set")
+        return 2
+
+    if BOT_MODE == "poll":
+        return run_poll(waha)
+    return run_webhook(waha)
 
 
 if __name__ == "__main__":
