@@ -496,6 +496,32 @@ TOOL_SCHEMA = [
 
 # ---------------------------------------------------------------- LLM
 
+def redact(messages: list[dict]) -> list[dict]:
+    """Strip inline image bytes before anything leaves for observability.
+
+    A data: URI carries the whole photo; shipping that to Langfuse would upload
+    megabytes per message and store the image there. We keep only a marker.
+    """
+    out = []
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            parts = []
+            for p in content:
+                if isinstance(p, dict) and p.get("type") == "image_url":
+                    url = (p.get("image_url") or {}).get("url", "")
+                    if url.startswith("data:"):
+                        head = url.split(",", 1)[0]
+                        parts.append({"type": "image_url",
+                                      "image_url": {"url": f"<{head}, {len(url)} chars omitted>"}})
+                        continue
+                parts.append(p)
+            out.append({**m, "content": parts})
+        else:
+            out.append(m)
+    return out
+
+
 def llm_chat(messages: list[dict]) -> str:
     client = httpx.Client(
         base_url=LLM_BASE_URL,
@@ -517,9 +543,9 @@ def llm_chat(messages: list[dict]) -> str:
     )
     convo = [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + grounding}] + messages
     model = current_model()
-    trace = obs.trace("whatsapp-message", input=messages, metadata={"model": model})
+    trace = obs.trace("whatsapp-message", input=redact(messages), metadata={"model": model})
     for _ in range(5):  # cap tool-call rounds
-        gen = trace.generation("llm", model=model, input=convo)
+        gen = trace.generation("llm", model=model, input=redact(convo))
         try:
             resp = client.post(
                 "/chat/completions",

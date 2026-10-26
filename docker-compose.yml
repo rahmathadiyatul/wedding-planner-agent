@@ -13,6 +13,10 @@ services:
       WHATSAPP_API_KEY: ${WAHA_API_KEY}
       WHATSAPP_DEFAULT_ENGINE: ${WHATSAPP_DEFAULT_ENGINE:-GOWS}
       WAHA_PRINT_QR: "False"
+      # WAHA caches incoming media on disk to serve it over HTTP. The bot reads
+      # each image once, immediately, so keep the cache short-lived (seconds)
+      # instead of letting photos pile up on a 19GB disk.
+      WHATSAPP_FILES_LIFETIME: ${WHATSAPP_FILES_LIFETIME:-600}
     volumes:
       - waha-sessions:/app/.sessions
       - waha-media:/app/.media
