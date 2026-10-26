@@ -1,0 +1,12 @@
+# secrets / local config — never commit real keys
+.env
+.env.*
+!env.example
+*.log
+bot.log
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
