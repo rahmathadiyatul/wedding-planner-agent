@@ -146,6 +146,10 @@ class Waha:
         if st in ("STOPPED", "FAILED"):
             self._c.post(f"/api/sessions/{self.session}/start", json={})
 
+    def logout_session(self) -> None:
+        """Unlink the WhatsApp account so a fresh QR can be scanned."""
+        self._c.post(f"/api/sessions/{self.session}/logout", json={})
+
     def get_qr_png(self) -> bytes:
         r = self._c.get(f"/api/{self.session}/auth/qr", headers={"accept": "image/png"})
         r.raise_for_status()
@@ -616,6 +620,42 @@ def build_history(messages: list[dict]) -> list[dict]:
     return out[-HISTORY_LIMIT:]
 
 
+# ---------------------------------------------------------------- QR links
+
+QR_TTL = int(os.environ.get("QR_TTL_SECONDS", "600"))
+_qr_tokens: dict[str, float] = {}
+_qr_lock = threading.Lock()
+
+
+def new_qr_token() -> str:
+    """Mint a throwaway token for viewing the live login QR."""
+    import secrets
+    tok = secrets.token_urlsafe(16)
+    now = time.time()
+    with _qr_lock:
+        for t, exp in list(_qr_tokens.items()):  # opportunistic cleanup
+            if exp < now:
+                _qr_tokens.pop(t, None)
+        _qr_tokens[tok] = now + QR_TTL
+    return tok
+
+
+def qr_token_valid(tok: str) -> bool:
+    with _qr_lock:
+        exp = _qr_tokens.get(tok or "")
+        if not exp:
+            return False
+        if exp < time.time():
+            _qr_tokens.pop(tok, None)
+            return False
+        return True
+
+
+def qr_url(tok: str) -> str:
+    base = DOC_PUBLIC_BASE or ""
+    return f"{base}/qr?t={tok}"
+
+
 # ---------------------------------------------------------------- shared handling
 
 _seen_ids: set[str] = set()
@@ -631,6 +671,40 @@ def _already_handled(mid: str | None) -> bool:
     if len(_seen_ids) > 4000:
         _seen_ids.intersection_update(list(_seen_ids)[-2000:])
     return False
+
+
+def _qr_command(waha: "Waha", force: bool = False) -> str:
+    """Hand back a short-lived link showing the live WhatsApp login QR."""
+    if not DOC_PUBLIC_BASE:
+        return "Belum ada DOC_PUBLIC_BASE, jadi aku nggak bisa bikin link QR."
+    try:
+        status = waha.session_status()
+    except Exception as e:  # noqa: BLE001
+        obs.error("qr-status-error", e)
+        return f"Gagal cek status sesi: {e}"
+
+    if status == "WORKING" and not force:
+        return ("WhatsApp masih tersambung, jadi nggak perlu scan ulang.\n"
+                "Kalau tetap mau ganti/relink: " + TRIGGER_PREFIX + " /qr force")
+    if force:
+        try:
+            waha.logout_session()
+            time.sleep(1)
+            waha.ensure_session_started()
+        except Exception as e:  # noqa: BLE001
+            obs.error("qr-relink-error", e)
+            return f"Gagal mulai ulang sesi: {e}"
+    else:
+        try:
+            waha.ensure_session_started()
+        except Exception:  # noqa: BLE001
+            pass
+
+    tok = new_qr_token()
+    mins = max(1, QR_TTL // 60)
+    return (f"Buka link ini buat scan QR (berlaku {mins} menit, QR-nya refresh sendiri):\n"
+            f"{qr_url(tok)}\n"
+            "WhatsApp > Perangkat tertaut > Tautkan perangkat.")
 
 
 def handle_command(waha: "Waha", chat_id: str, prompt: str) -> bool:
@@ -651,8 +725,10 @@ def handle_command(waha: "Waha", chat_id: str, prompt: str) -> bool:
                 reply = "Oke, model diganti ke " + set_model(arg)
             except ValueError as e:
                 reply = str(e)
+    elif cmd == "qr":
+        reply = _qr_command(waha, force=arg.lower() in ("force", "ulang", "relink"))
     elif cmd in ("help", "bantuan"):
-        reply = ("Perintah: /model (lihat & ganti model), /help.\n"
+        reply = ("Perintah: /model (lihat & ganti model), /qr (link scan WhatsApp), /help.\n"
                  "Selain itu tanya biasa aja; aku bisa catat pemasukan/pengeluaran, "
                  "baca dokumen, cari di web, dan baca foto.")
     else:
@@ -832,6 +908,39 @@ def run_webhook(waha: "Waha") -> int:
                     return self._send(403, "forbidden")
                 return self._send(200, json.dumps(get_plan().read(), ensure_ascii=False),
                                   "application/json; charset=utf-8")
+            # Throwaway QR links (own short-lived tokens, not DOC_TOKEN).
+            if path == "/qr":
+                tok = (q.get("t") or [""])[0]
+                if not qr_token_valid(tok):
+                    return self._send(403, "link kedaluwarsa, minta lagi: " + TRIGGER_PREFIX + " /qr")
+                return self._send(200, _qr_page_html(tok), "text/html; charset=utf-8")
+            if path == "/qr.png":
+                tok = (q.get("t") or [""])[0]
+                if not qr_token_valid(tok):
+                    return self._send(403, "expired")
+                try:
+                    png = waha.get_qr_png()
+                except Exception as e:  # noqa: BLE001
+                    return self._send(409, f"qr unavailable: {e}")
+                self.send_response(200)
+                self.send_header("content-type", "image/png")
+                self.send_header("cache-control", "no-store")
+                self.send_header("content-length", str(len(png)))
+                self.end_headers()
+                try:
+                    self.wfile.write(png)
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            if path == "/qr/status":
+                tok = (q.get("t") or [""])[0]
+                if not qr_token_valid(tok):
+                    return self._send(403, "expired")
+                try:
+                    st = waha.session_status()
+                except Exception as e:  # noqa: BLE001
+                    st = f"error: {e}"
+                return self._send(200, json.dumps({"status": st}), "application/json")
             return self._send(404, "not found")
 
         def do_POST(self):
@@ -873,6 +982,52 @@ def run_webhook(waha: "Waha") -> int:
     except KeyboardInterrupt:
         log("bye")
     return 0
+
+
+def _qr_page_html(tok: str) -> str:
+    """Live QR page: WhatsApp rotates the code every ~20s, so refresh the image
+    rather than handing out a snapshot that's stale before it's opened."""
+    return """<!doctype html>
+<html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scan WhatsApp</title>
+<style>
+ body{margin:0;background:#0f1115;color:#e8eaed;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+      display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}
+ .c{background:#161a21;border:1px solid #262c36;border-radius:16px;padding:22px;max-width:380px;width:100%;text-align:center}
+ h1{font-size:18px;margin:0 0 6px} p{color:#949cab;font-size:14px;margin:6px 0 16px;line-height:1.5}
+ .qr{background:#fff;border-radius:12px;padding:12px;display:inline-block;min-height:270px}
+ img{width:250px;height:250px;display:block}
+ .ok{color:#39d98a;font-weight:600;font-size:16px}
+ .err{color:#ff6b6b;font-size:14px}
+ .t{color:#6b7280;font-size:12px;margin-top:12px}
+</style></head><body><div class="c">
+ <h1>Tautkan WhatsApp</h1>
+ <p>WhatsApp &gt; Perangkat tertaut &gt; Tautkan perangkat, lalu scan kode di bawah.</p>
+ <div class="qr" id="box"><img id="qr" alt="QR"></div>
+ <div id="msg" class="t">memuat…</div>
+ <div class="t">Kode berganti otomatis tiap 15 detik.</div>
+</div>
+<script>
+const T = "__TOK__";
+function refresh(){ document.getElementById('qr').src = '/qr.png?t='+encodeURIComponent(T)+'&_='+Date.now(); }
+async function poll(){
+  try{
+    const r = await fetch('/qr/status?t='+encodeURIComponent(T));
+    if(!r.ok){ document.getElementById('msg').innerHTML='<span class="err">Link kedaluwarsa.</span>'; return; }
+    const s = (await r.json()).status;
+    const m = document.getElementById('msg');
+    if(s === 'WORKING'){
+      document.getElementById('box').innerHTML = '<div style="padding:100px 10px" class="ok">Tersambung ✓</div>';
+      m.innerHTML = '<span class="ok">WhatsApp sudah tertaut. Bisa tutup halaman ini.</span>';
+      return;
+    }
+    m.textContent = 'status: ' + s;
+  }catch(e){}
+  setTimeout(poll, 3000);
+}
+refresh(); setInterval(refresh, 15000); poll();
+</script></body></html>""".replace("__TOK__", tok)
 
 
 def _safe(fn, *a) -> None:
