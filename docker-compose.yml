@@ -27,13 +27,17 @@ services:
     build: .
     restart: unless-stopped
     depends_on: [waha]
+    # Publish the doc page so you + Princess can open it. /webhook and /doc are
+    # both token-gated. (WAHA itself reaches the bot over the private network.)
+    ports:
+      - "8080:8080"
     environment:
       # point the bot at WAHA over the compose network
       WAHA_BASE_URL: http://waha:3000
       WAHA_API_KEY: ${WAHA_API_KEY}
       WAHA_SESSION: ${WAHA_SESSION:-default}
       GROUP_CHAT_ID: ${GROUP_CHAT_ID}
-      TRIGGER_PREFIX: ${TRIGGER_PREFIX:-@bang-rahmat}
+      TRIGGER_PREFIX: ${TRIGGER_PREFIX:-@bang}
       REPLY_PREFIX: ${REPLY_PREFIX:-🤖 }
       # webhook mode: WAHA posts to the bot by its service name
       BOT_MODE: webhook
@@ -47,6 +51,13 @@ services:
       SYSTEM_PROMPT: ${SYSTEM_PROMPT:-}
       # tools
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # shared wedding doc
+      DOC_PATH: /data/wedding.md
+      DOC_TOKEN: ${DOC_TOKEN}
+      DOC_PUBLIC_BASE: ${DOC_PUBLIC_BASE:-}
+      DOC_TITLE: ${DOC_TITLE:-Wedding Plan}
+    volumes:
+      - bot-data:/data
     networks: [botnet]
 
 networks:
@@ -55,3 +66,4 @@ networks:
 volumes:
   waha-sessions:
   waha-media:
+  bot-data:
