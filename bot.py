@@ -539,11 +539,17 @@ def llm_chat(messages: list[dict]) -> str:
         now = dt.datetime.now(ZoneInfo(os.environ.get("TZ_NAME", "Asia/Jakarta")))
     except Exception:  # noqa: BLE001
         now = dt.datetime.utcnow()
+    people = ", ".join(sorted(_known_speakers)) or "the couple"
     grounding = (
         f"Today's date is {now:%A, %d %B %Y}. "
         "When the user asks about 'this year', 'latest', recent news, scores, prices, "
         "or current events, call web_search first and answer from the results; "
-        "do not rely on memory for anything time-sensitive."
+        "do not rely on memory for anything time-sensitive.\n"
+        f"This is a group chat with: {people}. Every human message is prefixed with "
+        "'Name:' so you know who said it. Attribute accurately: when asked what "
+        "someone said, use only the messages labelled with that name, and say so "
+        "plainly if they said nothing relevant. Never invent messages. "
+        "Your own reply must NOT start with a name or any prefix."
     )
     convo = [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + grounding}] + messages
     model = current_model()
@@ -568,6 +574,12 @@ def llm_chat(messages: list[dict]) -> str:
             text = (msg.get("content") or "").strip()
             # Defensive: strip a leading "[me]"/"[name]" tag if the model ever adds one.
             text = re.sub(r"^\[[^\]]{1,20}\]\s*", "", text)
+            # ...and a "Adi:"-style prefix copied from the labelled history. Only
+            # known speaker names, so legitimate text like "Catatan: ..." survives.
+            for who in _known_speakers:
+                if text.lower().startswith(who.lower() + ":"):
+                    text = text[len(who) + 1:].lstrip()
+                    break
             trace.end(output=text)
             return text or "(no response)"
         convo.append(msg)
@@ -596,13 +608,32 @@ def msg_text(m: dict) -> str:
     return (m.get("body") or m.get("text") or "").strip()
 
 
+_known_speakers: set[str] = set()
+
+
+def speaker_name(m: dict) -> str:
+    """Who sent this message, for attribution in a multi-person group.
+
+    WhatsApp gives us the display name in _data.Info.PushName. Without it the
+    model cannot tell the couple apart and will misattribute ("what did Dian
+    say?" answered with the other person's messages).
+    """
+    data = m.get("_data")
+    info = (data.get("Info") or {}) if isinstance(data, dict) else {}
+    name = str(info.get("PushName") or "").strip()
+    if not name:
+        name = "Aku" if m.get("fromMe") else str(m.get("participant") or "Seseorang")
+    name = name[:40]
+    return name[:1].upper() + name[1:] if name else name
+
+
 def build_history(messages: list[dict]) -> list[dict]:
     """Turn WAHA messages (oldest->newest) into LLM context.
 
-    The bot sends as the SAME WhatsApp number the human types from, so `fromMe`
-    cannot tell them apart -- everything would look like the assistant. Instead
-    we identify the bot's own turns by the reply prefix; everything else is a
-    user turn. Trigger/reply prefixes are stripped from the content.
+    The bot sends as the SAME WhatsApp number one of the humans types from, so
+    `fromMe` cannot tell them apart -- the bot's own turns are identified by the
+    reply prefix instead. Every other message is a user turn, labelled with the
+    sender's name so the model knows who said what.
     """
     rp = REPLY_PREFIX.strip()
     out = []
@@ -611,12 +642,16 @@ def build_history(messages: list[dict]) -> list[dict]:
         if not t:
             continue
         if rp and t.startswith(rp):
-            role, content = "assistant", t[len(rp):].strip()
-        else:
-            role = "user"
-            content = t[len(TRIGGER_PREFIX):].strip() if t.startswith(TRIGGER_PREFIX) else t
-        if content:
-            out.append({"role": role, "content": content})
+            content = t[len(rp):].strip()
+            if content:
+                out.append({"role": "assistant", "content": content})
+            continue
+        content = t[len(TRIGGER_PREFIX):].strip() if t.startswith(TRIGGER_PREFIX) else t
+        if not content:
+            continue
+        who = speaker_name(m)
+        _known_speakers.add(who)
+        out.append({"role": "user", "content": f"{who}: {content}"})
     return out[-HISTORY_LIMIT:]
 
 
@@ -740,9 +775,11 @@ def handle_command(waha: "Waha", chat_id: str, prompt: str) -> bool:
     return True
 
 
-def handle_trigger(waha: "Waha", chat_id: str, prompt: str, images: list[str] | None = None) -> None:
+def handle_trigger(waha: "Waha", chat_id: str, prompt: str, images: list[str] | None = None,
+                   speaker: str = "") -> None:
     """Fetch context, ask the LLM, and reply into the chat."""
-    log("trigger:", prompt, f"(+{len(images)} image)" if images else "")
+    log("trigger:", f"[{speaker}]" if speaker else "", prompt,
+        f"(+{len(images)} image)" if images else "")
     history = []
     try:
         msgs = waha.get_messages(chat_id, HISTORY_LIMIT)
@@ -750,17 +787,20 @@ def handle_trigger(waha: "Waha", chat_id: str, prompt: str, images: list[str] | 
             history = build_history(msgs)
     except Exception as e:  # noqa: BLE001
         log("warn: history fetch failed:", e)
+    if speaker:
+        _known_speakers.add(speaker)
+    labelled = f"{speaker}: {prompt}" if speaker else prompt
     if images:
         # Multimodal turn: text + image parts (OpenAI-compatible content array).
-        parts: list[dict] = [{"type": "text", "text": prompt or "Tolong lihat gambar ini."}]
+        parts: list[dict] = [{"type": "text", "text": labelled or "Tolong lihat gambar ini."}]
         parts += [{"type": "image_url", "image_url": {"url": u}} for u in images]
-        if history and history[-1]["role"] == "user" and history[-1]["content"] == prompt:
+        if history and history[-1]["role"] == "user" and history[-1]["content"] == labelled:
             history.pop()
         history.append({"role": "user", "content": parts})
-    elif not (history and history[-1]["role"] == "user" and history[-1]["content"] == prompt):
+    elif not (history and history[-1]["role"] == "user" and history[-1]["content"] == labelled):
         # The triggering message is usually already the last history item; only add
         # it if it isn't, so we don't duplicate the current question.
-        history.append({"role": "user", "content": prompt})
+        history.append({"role": "user", "content": labelled})
     try:
         answer = llm_chat(history)
     except Exception as e:  # noqa: BLE001
@@ -824,7 +864,8 @@ def process_event(waha: "Waha", payload: dict) -> None:
     prompt = text[len(TRIGGER_PREFIX):].strip()
     if handle_command(waha, chat_id, prompt):
         return
-    handle_trigger(waha, chat_id, prompt, images=fetch_images(waha, payload))
+    handle_trigger(waha, chat_id, prompt, images=fetch_images(waha, payload),
+                   speaker=speaker_name(payload))
 
 
 # ---------------------------------------------------------------- webhook mode
