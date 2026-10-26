@@ -94,8 +94,34 @@ class Waha:
             timeout=HTTP_TIMEOUT,
         )
 
+    def _request(self, method: str, path: str, json: dict | None = None):
+        r = self._c.request(method, path, json=json)
+        r.raise_for_status()
+        return r.json() if r.content else None
+
     def version(self) -> dict:
         return self._c.get("/api/version").raise_for_status().json()
+
+    def session_status(self) -> str | None:
+        r = self._c.get(f"/api/sessions/{self.session}")
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return (r.json() or {}).get("status")
+
+    def ensure_session_started(self) -> None:
+        """Create the session if missing, then start it (idempotent)."""
+        st = self.session_status()
+        if st is None:
+            self._c.post("/api/sessions", json={"name": self.session, "start": True})
+            return
+        if st in ("STOPPED", "FAILED"):
+            self._c.post(f"/api/sessions/{self.session}/start", json={})
+
+    def get_qr_png(self) -> bytes:
+        r = self._c.get(f"/api/{self.session}/auth/qr", headers={"accept": "image/png"})
+        r.raise_for_status()
+        return r.content
 
     def list_groups(self) -> list[dict]:
         r = self._c.get(f"/api/{self.session}/groups")
@@ -347,18 +373,37 @@ def run_webhook(waha: "Waha") -> int:
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    # Register our webhook on the WAHA session (PUT config.webhooks).
     base = os.environ.get("PUBLIC_WEBHOOK_URL", "").rstrip("/")
     if not base:
-        log("FATAL: PUBLIC_WEBHOOK_URL not set (the public URL WAHA should POST to)")
+        log("FATAL: PUBLIC_WEBHOOK_URL not set (the URL WAHA should POST to, e.g. http://bot:8080)")
         return 2
     hook_url = base + WEBHOOK_PATH
+
+    # Bring the session up and wait for it to link, so webhook registration sticks
+    # even across reboots (QR scan happens out of band via /auth/qr).
+    try:
+        waha.ensure_session_started()
+    except Exception as e:  # noqa: BLE001
+        log("warn: ensure_session_started:", e)
+    waited = 0
+    while True:
+        try:
+            st = waha.session_status()
+        except Exception as e:  # noqa: BLE001
+            st = f"err:{e}"
+        if st == "WORKING":
+            break
+        if waited % 15 == 0:
+            log(f"waiting for session '{WAHA_SESSION}' to be WORKING (status={st}); scan the QR if prompted")
+        time.sleep(3)
+        waited += 3
+
     try:
         cfg = {"config": {"webhooks": [{"url": hook_url, "events": WEBHOOK_EVENTS}]}}
         waha._request("PUT", f"/api/sessions/{WAHA_SESSION}", json=cfg)
         log(f"registered webhook -> {hook_url} events={WEBHOOK_EVENTS}")
     except Exception as e:  # noqa: BLE001
-        log("warn: could not register webhook (set it manually?):", e)
+        log("warn: could not register webhook:", e)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):  # silence default stderr logging

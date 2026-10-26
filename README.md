@@ -41,3 +41,21 @@ Tools are defined in `bot.py` (`TOOLS` + `TOOL_SCHEMA`) — add your own there.
 
 > Secrets live only in `.env` (gitignored) or the process environment. Never
 > commit real keys.
+
+## Deploy (self-hosted WAHA + bot, one box)
+
+`docker-compose.yml` runs WAHA and the bot on a private network — WAHA posts
+webhooks to `http://bot:8080`, the bot calls `http://waha:3000`. No public
+ports are published (reach the WAHA dashboard via an SSH tunnel if needed).
+
+```bash
+git clone https://github.com/rahmathadiyatul/wedding-planner-agent.git
+cd wedding-planner-agent
+cp env.example .env         # fill WAHA_API_KEY, GROUP_CHAT_ID, LLM_API_KEY, TAVILY_API_KEY
+docker compose up -d --build
+
+# link WhatsApp (first run): fetch the QR from WAHA and scan it
+#   curl -s -H "x-api-key: $WAHA_API_KEY" http://localhost:3000/api/default/auth/qr \
+#     --output qr.png     # (publish waha:3000 locally or run from the host network)
+# the bot waits for the session to reach WORKING, then registers its webhook.
+```
