@@ -317,6 +317,18 @@ def tool_web_search(query: str, max_results: int = 5) -> str:
     return "\n".join(lines) or "no results"
 
 
+def doc_url() -> str:
+    if not DOC_PUBLIC_BASE:
+        return "(doc link not configured)"
+    tok = f"?token={DOC_TOKEN}" if DOC_TOKEN else ""
+    return f"{DOC_PUBLIC_BASE}/doc{tok}"
+
+
+def tool_doc_link() -> str:
+    """Return the shareable link to the editable wedding doc."""
+    return doc_url()
+
+
 def tool_doc_read(section: str = "") -> str:
     """Read the shared wedding doc (whole thing, or one section)."""
     doc = get_doc().read()
@@ -343,8 +355,7 @@ def tool_doc_edit(mode: str, content: str, section: str = "") -> str:
             return "error: mode must be append, set_section, or overwrite"
     except Exception as e:  # noqa: BLE001
         return f"error: {e}"
-    link = f" ({DOC_PUBLIC_BASE}/doc?token=...)" if DOC_PUBLIC_BASE else ""
-    return f"ok, doc updated{link}"
+    return f"ok, doc updated. link: {doc_url()}"
 
 
 TOOLS = {
@@ -353,6 +364,7 @@ TOOLS = {
     "web_search": tool_web_search,
     "doc_read": tool_doc_read,
     "doc_edit": tool_doc_edit,
+    "doc_link": tool_doc_link,
 }
 
 TOOL_SCHEMA = [
@@ -408,6 +420,15 @@ TOOL_SCHEMA = [
                     "section": {"type": "string", "description": "e.g. Budget, Guests, Vendors, To-dos, Notes"},
                 },
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "doc_link",
+            "description": "Return the shareable web link to the editable wedding doc. "
+                           "Use when asked for the doc link / where to edit it.",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
