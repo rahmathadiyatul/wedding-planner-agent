@@ -292,16 +292,24 @@ def msg_text(m: dict) -> str:
 def build_history(messages: list[dict]) -> list[dict]:
     """Turn WAHA messages (oldest->newest) into LLM context.
 
-    Sender names, when known, go in a `name` field (OpenAI-style) rather than
-    inlined into the content, so the model doesn't learn to echo a `[who]` tag.
+    The bot sends as the SAME WhatsApp number the human types from, so `fromMe`
+    cannot tell them apart -- everything would look like the assistant. Instead
+    we identify the bot's own turns by the reply prefix; everything else is a
+    user turn. Trigger/reply prefixes are stripped from the content.
     """
+    rp = REPLY_PREFIX.strip()
     out = []
     for m in messages:
         t = msg_text(m)
         if not t:
             continue
-        role = "assistant" if m.get("fromMe") else "user"
-        out.append({"role": role, "content": t})
+        if rp and t.startswith(rp):
+            role, content = "assistant", t[len(rp):].strip()
+        else:
+            role = "user"
+            content = t[len(TRIGGER_PREFIX):].strip() if t.startswith(TRIGGER_PREFIX) else t
+        if content:
+            out.append({"role": role, "content": content})
     return out[-HISTORY_LIMIT:]
 
 
@@ -332,7 +340,10 @@ def handle_trigger(waha: "Waha", chat_id: str, prompt: str) -> None:
             history = build_history(msgs)
     except Exception as e:  # noqa: BLE001
         log("warn: history fetch failed:", e)
-    history.append({"role": "user", "content": prompt})
+    # The triggering message is usually already the last history item; only add
+    # it if it isn't, so we don't duplicate the current question.
+    if not (history and history[-1]["role"] == "user" and history[-1]["content"] == prompt):
+        history.append({"role": "user", "content": prompt})
     try:
         answer = llm_chat(history)
     except Exception as e:  # noqa: BLE001
