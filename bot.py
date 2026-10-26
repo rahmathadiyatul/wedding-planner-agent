@@ -289,16 +289,42 @@ def tool_budget_list(kind: str = "", status: str = "") -> str:
 
 
 def tool_budget_add(kind: str, item: str, amount, status: str = "actual",
-                    category: str = "", date: str = "") -> str:
-    """Add one income or expense entry."""
+                    category: str = "", date: str = "", parent: str = "") -> str:
+    """Add one income or expense entry, optionally as a sub-item of another."""
     if kind not in ("income", "expense"):
         return "error: kind must be 'income' or 'expense'"
     if not item:
         return "error: item is required"
     e = get_plan().add(kind=kind, item=item, amount=amount, status=status,
-                       category=category, date=date)
+                       category=category, date=date, parent=parent)
+    where = f" di bawah '{parent}'" if parent and e.get("parent") else ""
     return (f"ok, added [{e['id']}] {e['item']} {rupiah(e['amount'])} "
-            f"({e['kind']}, {e['status']})" + "\n" + get_plan().summary_text())
+            f"({e['kind']}, {e['status']}){where}" + "\n" + get_plan().summary_text())
+
+
+def tool_budget_add_items(parent: str, items: list, kind: str = "expense",
+                          status: str = "expected") -> str:
+    """Add a whole breakdown at once as sub-items under one parent entry.
+
+    Creates the parent if it doesn't exist yet. The parent's amount becomes the
+    sum of its sub-items, so don't also record a separate total.
+    """
+    p = get_plan()
+    if not items:
+        return "error: items is required"
+    if not p._resolved(parent):  # create the umbrella entry on demand
+        p.add(kind=kind, item=parent, amount=0, status=status)
+    rows = []
+    for it in items:
+        if isinstance(it, dict):
+            rows.append({"item": it.get("item") or it.get("name") or "",
+                         "amount": it.get("amount", 0),
+                         "status": it.get("status") or status,
+                         "category": it.get("category", "")})
+    added = p.add_many(rows, parent=parent)
+    lines = "\n".join(f"  - {a['item']}: {rupiah(a['amount'])}" for a in added)
+    return (f"ok, {len(added)} rincian ditambahkan ke '{parent}':\n{lines}\n"
+            + p.entries_text() + "\n\n" + p.summary_text())
 
 
 def tool_budget_update(id: str, item: str = "", amount=None, kind: str = "",
@@ -340,6 +366,7 @@ TOOLS = {
     "budget_summary": tool_budget_summary,
     "budget_list": tool_budget_list,
     "budget_add": tool_budget_add,
+    "budget_add_items": tool_budget_add_items,
     "budget_update": tool_budget_update,
     "budget_delete": tool_budget_delete,
     "notes_read": tool_notes_read,
@@ -428,8 +455,43 @@ TOOL_SCHEMA = [
                     "status": {"type": "string", "enum": ["actual", "expected"]},
                     "category": {"type": "string"},
                     "date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "parent": {"type": "string",
+                               "description": "id or item name to file this under as a sub-item"},
                 },
                 "required": ["kind", "item", "amount"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "budget_add_items",
+            "description": "Record a whole cost breakdown at once as sub-items under one "
+                           "parent (e.g. 'Administrasi KUA' with its 6 line items). Creates "
+                           "the parent if needed. The parent's total is summed from the "
+                           "sub-items automatically, so never add the total as its own entry.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "parent": {"type": "string", "description": "umbrella item name, e.g. 'Administrasi KUA'"},
+                    "kind": {"type": "string", "enum": ["income", "expense"]},
+                    "status": {"type": "string", "enum": ["actual", "expected"]},
+                    "items": {
+                        "type": "array",
+                        "description": "the line items making up the total",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "item": {"type": "string"},
+                                "amount": {"type": "integer"},
+                                "status": {"type": "string", "enum": ["actual", "expected"]},
+                                "category": {"type": "string"},
+                            },
+                            "required": ["item", "amount"],
+                        },
+                    },
+                },
+                "required": ["parent", "items"],
             },
         },
     },

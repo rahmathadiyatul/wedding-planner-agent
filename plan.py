@@ -20,7 +20,6 @@ import json
 import os
 import threading
 import datetime as dt
-import html
 import uuid
 
 KINDS = ("income", "expense")
@@ -95,22 +94,59 @@ class PlanStore:
         """Full save from the web page."""
         with self._lock:
             data = self._read_locked()
-            data["entries"] = [_clean(e) for e in entries if _clean(e)["item"] or _clean(e)["amount"]]
+            cleaned, idmap = [], {}
+            for e in entries:
+                c = _clean(e)
+                if not c["item"] and not c["amount"]:
+                    continue
+                old = str(e.get("id") or "")
+                if not old or old.startswith("tmp-"):
+                    c["id"] = uuid.uuid4().hex[:8]
+                    if old:
+                        idmap[old] = c["id"]
+                cleaned.append(c)
+            _relink(cleaned, idmap)
+            data["entries"] = cleaned
             if notes is not None:
                 data["notes"] = notes
             self._write_locked(data)
 
     def add(self, kind: str, item: str, amount, status: str = "actual",
-            category: str = "", date: str = "", note: str = "") -> dict:
-        entry = _clean({
-            "id": uuid.uuid4().hex[:8], "kind": kind, "item": item, "amount": amount,
-            "status": status, "category": category, "date": date, "note": note,
-        })
+            category: str = "", date: str = "", note: str = "", parent: str = "") -> dict:
         with self._lock:
             data = self._read_locked()
+            pid = _resolve_parent(data["entries"], parent)
+            if pid:  # a sub-item always belongs to its parent's side of the ledger
+                par = next((x for x in data["entries"] if x["id"] == pid), None)
+                if par:
+                    kind = par.get("kind", kind)
+            entry = _clean({
+                "id": uuid.uuid4().hex[:8], "kind": kind, "item": item, "amount": amount,
+                "status": status, "category": category, "date": date, "note": note,
+                "parent": pid,
+            })
             data["entries"].append(entry)
             self._write_locked(data)
         return entry
+
+    def add_many(self, items: list[dict], parent: str = "") -> list[dict]:
+        """Add several entries at once, optionally all under one parent."""
+        out = []
+        with self._lock:
+            data = self._read_locked()
+            pid = _resolve_parent(data["entries"], parent)
+            par = next((x for x in data["entries"] if x["id"] == pid), None) if pid else None
+            for it in items or []:
+                e = dict(it)
+                if par:
+                    e["kind"] = par.get("kind", e.get("kind"))
+                    e["parent"] = pid
+                e["id"] = uuid.uuid4().hex[:8]
+                c = _clean(e)
+                data["entries"].append(c)
+                out.append(c)
+            self._write_locked(data)
+        return out
 
     def update(self, entry_id: str, **fields) -> dict | None:
         with self._lock:
@@ -124,14 +160,20 @@ class PlanStore:
         return None
 
     def delete(self, entry_id: str) -> bool:
+        """Delete an entry and, with it, any sub-items it owns."""
         with self._lock:
             data = self._read_locked()
             before = len(data["entries"])
-            data["entries"] = [e for e in data["entries"] if e.get("id") != entry_id]
+            data["entries"] = [e for e in data["entries"]
+                               if e.get("id") != entry_id and e.get("parent") != entry_id]
             if len(data["entries"]) != before:
                 self._write_locked(data)
                 return True
         return False
+
+    def _resolved(self, parent: str) -> str:
+        """The id an item name/id resolves to, or '' if there's no such entry."""
+        return _resolve_parent(self.read()["entries"], parent)
 
     def find(self, text: str) -> list[dict]:
         t = (text or "").strip().lower()
@@ -145,7 +187,10 @@ class PlanStore:
             self._write_locked(data)
 
     def summary(self) -> dict:
-        entries = self.read()["entries"]
+        all_entries = self.read()["entries"]
+        # A parent's amount is the sum of its children, so counting both would
+        # double-count: total over leaves only.
+        entries = leaves(all_entries)
 
         def tot(kind, status=None):
             return sum(int(e.get("amount") or 0) for e in entries
@@ -158,7 +203,7 @@ class PlanStore:
             "expense_actual": exp_a, "expense_expected": exp_e, "expense_total": exp_a + exp_e,
             "cash_on_hand": inc_a - exp_a,
             "projected_balance": (inc_a + inc_e) - (exp_a + exp_e),
-            "count": len(entries),
+            "count": len(all_entries),
         }
 
     def summary_text(self) -> str:
@@ -175,21 +220,37 @@ class PlanStore:
         )
 
     def entries_text(self, kind: str = "", status: str = "") -> str:
-        entries = self.read()["entries"]
-        if kind in KINDS:
-            entries = [e for e in entries if e.get("kind") == kind]
-        if status in STATUSES:
-            entries = [e for e in entries if e.get("status") == status]
-        if not entries:
-            return "(belum ada entri)"
-        lines = []
-        for e in entries:
-            bits = [e.get("date") or "-", e.get("item", ""), rupiah(e.get("amount", 0))]
-            meta = [e.get("kind", ""), e.get("status", "")]
+        """Tree listing: sub-items indented under their parent, parents showing
+        the summed total so the bot can read the breakdown back accurately."""
+        all_entries = self.read()["entries"]
+        lines: list[str] = []
+
+        def want(e: dict) -> bool:
+            return ((kind not in KINDS or e.get("kind") == kind)
+                    and (status not in STATUSES or e.get("status") == status))
+
+        def emit(e: dict, depth: int) -> None:
+            kids = children_of(all_entries, e.get("id", ""))
+            amt = amount_of(all_entries, e)
+            meta = [e.get("status", "")]
             if e.get("category"):
                 meta.append(e["category"])
-            lines.append(f"[{e.get('id')}] " + " | ".join(bits) + f"  ({', '.join(meta)})")
-        return "\n".join(lines)
+            if kids:
+                meta.append(f"{len(kids)} sub-item")
+            head = "  " * depth + ("- " if depth else "")
+            date = f"{e.get('date')} | " if e.get("date") else ""
+            lines.append(f"{head}[{e.get('id')}] {date}{e.get('item','')} | "
+                         f"{rupiah(amt)}  ({', '.join(m for m in meta if m)})")
+            for k in kids:
+                emit(k, depth + 1)
+
+        for e in all_entries:
+            if e.get("parent"):
+                continue  # reached through its parent
+            kids = children_of(all_entries, e.get("id", ""))
+            if want(e) or any(want(k) for k in kids):
+                emit(e, 0)
+        return "\n".join(lines) if lines else "(belum ada entri)"
 
 
 def _clean(e: dict) -> dict:
@@ -204,7 +265,63 @@ def _clean(e: dict) -> dict:
         "category": str(e.get("category") or "").strip(),
         "date": str(e.get("date") or "").strip(),
         "note": str(e.get("note") or "").strip(),
+        "parent": str(e.get("parent") or "").strip(),
     }
+
+
+def children_of(entries: list[dict], pid: str) -> list[dict]:
+    return [e for e in entries if e.get("parent") == pid]
+
+
+def leaves(entries: list[dict]) -> list[dict]:
+    """Entries with no sub-items -- the ones that actually carry money."""
+    parents = {e.get("parent") for e in entries if e.get("parent")}
+    return [e for e in entries if e.get("id") not in parents]
+
+
+def amount_of(entries: list[dict], e: dict) -> int:
+    """An entry's effective amount: the sum of its sub-items, or its own value."""
+    kids = children_of(entries, e.get("id", ""))
+    if kids:
+        return sum(amount_of(entries, k) for k in kids)
+    return int(e.get("amount") or 0)
+
+
+def _resolve_parent(entries: list[dict], parent: str) -> str:
+    """Accept either an id or an item name (what the bot will usually have)."""
+    p = (parent or "").strip()
+    if not p:
+        return ""
+    for e in entries:
+        if e.get("id") == p:
+            return p
+    low = p.lower()
+    for e in entries:
+        if e.get("item", "").strip().lower() == low:
+            return e.get("id", "")
+    for e in entries:
+        if low in e.get("item", "").strip().lower():
+            return e.get("id", "")
+    return ""
+
+
+def _relink(cleaned: list[dict], idmap: dict) -> None:
+    """Point children at their parents' final ids and drop dangling links."""
+    ids = {c["id"] for c in cleaned}
+    for c in cleaned:
+        p = c.get("parent") or ""
+        if p in idmap:
+            c["parent"] = idmap[p]
+        if c.get("parent") and c["parent"] not in ids:
+            c["parent"] = ""
+        if c.get("parent") == c["id"]:
+            c["parent"] = ""
+    # children follow their parent's side of the ledger
+    by_id = {c["id"]: c for c in cleaned}
+    for c in cleaned:
+        par = by_id.get(c.get("parent") or "")
+        if par:
+            c["kind"] = par.get("kind", c["kind"])
 
 
 def _now() -> str:
@@ -214,160 +331,7 @@ def _now() -> str:
 # ---------------------------------------------------------------- web page
 
 def render_page(token: str, store: PlanStore) -> str:
+    import page
     data = store.read()
-    payload = json.dumps({"entries": data["entries"], "notes": data.get("notes", "")},
-                         ensure_ascii=False)
-    return (_PAGE
-            .replace("__TITLE__", html.escape(store.title))
-            .replace("__TOKEN__", html.escape(token))
-            .replace("__DATA__", payload.replace("</", "<\\/")))
+    return page.render(token, store.title, data["entries"], data.get("notes", ""))
 
-
-_PAGE = r"""<!doctype html>
-<html lang="id"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__TITLE__</title>
-<style>
-  :root{ color-scheme: dark; --bg:#0f1115; --card:#161a21; --line:#262c36; --fg:#e8eaed;
-         --muted:#949cab; --in:#39d98a; --out:#ff6b6b; --accent:#2f6df6; }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);
-       font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-  header{padding:14px 16px;background:var(--card);border-bottom:1px solid var(--line);
-         position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:10px}
-  header h1{font-size:17px;margin:0}
-  .wrap{max-width:980px;margin:0 auto;padding:16px}
-  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:18px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
-  .card .l{font-size:12px;color:var(--muted);margin-bottom:6px}
-  .card .v{font-size:18px;font-weight:700;letter-spacing:.2px}
-  .card .s{font-size:11px;color:var(--muted);margin-top:4px}
-  .in{color:var(--in)} .out{color:var(--out)}
-  .big{grid-column:span 2}
-  @media(max-width:520px){ .big{grid-column:span 2} }
-  .tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card)}
-  table{border-collapse:collapse;width:100%;min-width:700px}
-  th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left;font-size:14px}
-  th{font-size:12px;color:var(--muted);font-weight:600;white-space:nowrap}
-  input,select,textarea{background:#0b0d11;color:var(--fg);border:1px solid #2a313c;
-       border-radius:8px;padding:8px;font:14px inherit;width:100%}
-  input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
-  td.amt input{text-align:right}
-  .del{background:transparent;border:1px solid #3a2a2e;color:var(--out);border-radius:8px;
-       padding:6px 10px;font-size:13px;cursor:pointer}
-  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:14px 0}
-  button.primary{background:var(--accent);color:#fff;border:0;padding:11px 18px;border-radius:10px;
-       font-size:15px;font-weight:600;cursor:pointer}
-  button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line);
-       padding:10px 14px;border-radius:10px;font-size:14px;cursor:pointer}
-  .muted{color:var(--muted);font-size:13px}
-  h2{font-size:15px;margin:22px 0 8px}
-  textarea{min-height:140px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
-  .ok{color:var(--in);font-size:14px}
-</style></head>
-<body>
-<header>
-  <h1>💍 __TITLE__</h1>
-  <span class="muted">bersama · @bang</span>
-</header>
-<div class="wrap">
-  <div class="cards" id="cards"></div>
-
-  <div class="bar">
-    <button class="ghost" onclick="addRow('income')">+ Pemasukan</button>
-    <button class="ghost" onclick="addRow('expense')">+ Pengeluaran</button>
-    <span class="muted">Nominal boleh ditulis 5000000 atau 5.000.000</span>
-  </div>
-
-  <div class="tablewrap">
-    <table>
-      <thead><tr>
-        <th style="width:110px">Jenis</th><th style="width:120px">Status</th>
-        <th>Item</th><th style="width:140px">Nominal</th>
-        <th style="width:130px">Kategori</th><th style="width:140px">Tanggal</th><th style="width:60px"></th>
-      </tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </div>
-
-  <h2>Catatan</h2>
-  <textarea id="notes" spellcheck="false"></textarea>
-
-  <div class="bar">
-    <button class="primary" onclick="save()">Simpan</button>
-    <span id="status" class="ok"></span>
-    <span class="muted">Simpan terakhir yang menang.</span>
-  </div>
-</div>
-
-<script>
-const TOKEN = "__TOKEN__";
-let DATA = __DATA__;
-
-const rp = n => { n = Math.round(Number(n)||0);
-  const s = Math.abs(n).toLocaleString('id-ID'); return (n<0?'-':'') + 'Rp ' + s; };
-const digits = s => { const neg=String(s).trim().startsWith('-');
-  const d=String(s||'').replace(/[^0-9]/g,''); const n=d?parseInt(d,10):0; return neg?-n:n; };
-
-function rowHtml(e){
-  const sel=(v,o)=>o.map(([k,l])=>`<option value="${k}"${v===k?' selected':''}>${l}</option>`).join('');
-  return `<tr data-id="${e.id||''}">
-    <td><select class="k" onchange="recalc()">${sel(e.kind,[['income','Pemasukan'],['expense','Pengeluaran']])}</select></td>
-    <td><select class="s" onchange="recalc()">${sel(e.status,[['actual','Sudah'],['expected','Rencana']])}</select></td>
-    <td><input class="i" value="${(e.item||'').replace(/"/g,'&quot;')}" placeholder="mis. DP catering"></td>
-    <td class="amt"><input class="a" inputmode="numeric" value="${e.amount? Number(e.amount).toLocaleString('id-ID'):''}"
-        oninput="recalc()" onblur="this.value=this.value?Number(digits(this.value)).toLocaleString('id-ID'):''"></td>
-    <td><input class="c" value="${(e.category||'').replace(/"/g,'&quot;')}" placeholder="venue, catering…"></td>
-    <td><input class="d" type="date" value="${e.date||''}"></td>
-    <td><button class="del" onclick="this.closest('tr').remove();recalc()">✕</button></td>
-  </tr>`;
-}
-function render(){
-  document.getElementById('rows').innerHTML = (DATA.entries||[]).map(rowHtml).join('');
-  document.getElementById('notes').value = DATA.notes || '';
-  recalc();
-}
-function addRow(kind){
-  document.getElementById('rows').insertAdjacentHTML('beforeend',
-    rowHtml({kind:kind,status:kind==='income'?'expected':'expected',item:'',amount:0,category:'',date:''}));
-  recalc();
-}
-function collect(){
-  return [...document.querySelectorAll('#rows tr')].map(tr=>({
-    id: tr.dataset.id || '',
-    kind: tr.querySelector('.k').value, status: tr.querySelector('.s').value,
-    item: tr.querySelector('.i').value, amount: digits(tr.querySelector('.a').value),
-    category: tr.querySelector('.c').value, date: tr.querySelector('.d').value,
-  })).filter(e=>e.item || e.amount);
-}
-function recalc(){
-  const es = collect();
-  const t=(k,s)=>es.filter(e=>e.kind===k&&(!s||e.status===s)).reduce((a,e)=>a+(e.amount||0),0);
-  const ia=t('income','actual'), ie=t('income','expected'), ea=t('expense','actual'), ee=t('expense','expected');
-  const cards=[
-    ['Uang di tangan', rp(ia-ea), 'diterima − dibayar', (ia-ea)>=0?'in':'out', true],
-    ['Saldo proyeksi', rp((ia+ie)-(ea+ee)), 'semua pemasukan − pengeluaran', ((ia+ie)-(ea+ee))>=0?'in':'out', true],
-    ['Pemasukan diterima', rp(ia), '', 'in', false],
-    ['Pemasukan diharapkan', rp(ie), '', 'in', false],
-    ['Pengeluaran dibayar', rp(ea), '', 'out', false],
-    ['Pengeluaran rencana', rp(ee), '', 'out', false],
-  ];
-  document.getElementById('cards').innerHTML = cards.map(([l,v,s,cls,big])=>
-    `<div class="card${big?' big':''}"><div class="l">${l}</div>
-     <div class="v ${cls}">${v}</div>${s?`<div class="s">${s}</div>`:''}</div>`).join('');
-}
-async function save(){
-  const body={entries:collect(), notes:document.getElementById('notes').value};
-  const st=document.getElementById('status'); st.textContent='menyimpan…';
-  try{
-    const r=await fetch('/api/plan?token='+encodeURIComponent(TOKEN),
-      {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
-    if(!r.ok) throw new Error(r.status);
-    DATA=await r.json(); render(); st.textContent='tersimpan ✓';
-    setTimeout(()=>st.textContent='',2500);
-  }catch(e){ st.textContent='gagal menyimpan: '+e.message; }
-}
-render();
-</script>
-</body></html>"""
