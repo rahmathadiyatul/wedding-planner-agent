@@ -82,7 +82,8 @@ WEBHOOK_EVENTS = [e.strip() for e in os.environ.get("WEBHOOK_EVENTS", "message.a
 
 # Shared wedding doc (self-hosted). Lives on a volume; served as a mobile web
 # page + edited by the bot's tools. DOC_TOKEN gates every public route.
-DOC_PATH = os.environ.get("DOC_PATH", "/data/wedding.md")
+DOC_PATH = os.environ.get("DOC_PATH", "/data/wedding.md")  # legacy markdown, migrated into notes
+PLAN_PATH = os.environ.get("PLAN_PATH", "/data/plan.json")
 DOC_TOKEN = os.environ.get("DOC_TOKEN", "")
 DOC_PUBLIC_BASE = os.environ.get("DOC_PUBLIC_BASE", "").rstrip("/")  # e.g. http://1.2.3.4:8080
 DOC_TITLE = os.environ.get("DOC_TITLE", "Wedding Plan")
@@ -155,112 +156,19 @@ class Waha:
         return r.json()
 
 
-# ---------------------------------------------------------------- shared doc
+# ---------------------------------------------------------------- shared plan
 
-class DocStore:
-    """A single shared Markdown doc, edited by both the web page and the bot.
-    One in-process lock serializes every read/modify/write, so human saves and
-    tool edits can't clobber each other."""
+from plan import PlanStore, rupiah, render_page  # noqa: E402
 
-    def __init__(self, path: str) -> None:
-        self.path = path
-        self._lock = threading.Lock()
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        if not os.path.exists(path):
-            self._write_locked(f"# {DOC_TITLE}\n\n## To-dos\n\n## Budget\n\n## Guests\n\n## Vendors\n\n## Notes\n")
-
-    def _write_locked(self, text: str) -> None:
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, self.path)
-
-    def read(self) -> str:
-        with self._lock:
-            try:
-                with open(self.path, encoding="utf-8") as fh:
-                    return fh.read()
-            except FileNotFoundError:
-                return ""
-
-    def overwrite(self, text: str) -> None:
-        with self._lock:
-            self._write_locked(text if text.endswith("\n") else text + "\n")
-
-    def append(self, text: str, section: str | None = None) -> None:
-        with self._lock:
-            try:
-                with open(self.path, encoding="utf-8") as fh:
-                    doc = fh.read()
-            except FileNotFoundError:
-                doc = ""
-            line = text.strip()
-            if not line.startswith(("-", "*", "#")):
-                line = "- " + line
-            if section:
-                doc = _upsert_section(doc, section, _section_body(doc, section) + line + "\n", append=True, new_line=line)
-            else:
-                doc = doc.rstrip("\n") + "\n" + line + "\n"
-            self._write_locked(doc)
-
-    def set_section(self, section: str, body: str) -> None:
-        with self._lock:
-            try:
-                with open(self.path, encoding="utf-8") as fh:
-                    doc = fh.read()
-            except FileNotFoundError:
-                doc = ""
-            self._write_locked(_upsert_section(doc, section, body.rstrip("\n") + "\n"))
+_plan: "PlanStore | None" = None
 
 
-def _section_body(doc: str, section: str) -> str:
-    lines = doc.splitlines(keepends=True)
-    out, grab = [], False
-    for ln in lines:
-        if ln.startswith("## "):
-            if grab:
-                break
-            grab = ln[3:].strip().lower() == section.strip().lower()
-            continue
-        if grab:
-            out.append(ln)
-    return "".join(out)
-
-
-def _upsert_section(doc: str, section: str, body: str, append: bool = False, new_line: str = "") -> str:
-    """Replace the `## section` block with body, or add the section if missing."""
-    lines = doc.splitlines(keepends=True)
-    out, i, found = [], 0, False
-    while i < len(lines):
-        ln = lines[i]
-        if ln.startswith("## ") and ln[3:].strip().lower() == section.strip().lower():
-            found = True
-            out.append(ln)
-            i += 1
-            # skip old body until next section
-            while i < len(lines) and not lines[i].startswith("## "):
-                i += 1
-            if not body.startswith("\n"):
-                out.append("\n")
-            out.append(body if body.endswith("\n") else body + "\n")
-            out.append("\n")
-            continue
-        out.append(ln)
-        i += 1
-    if not found:
-        doc2 = "".join(out).rstrip("\n") + f"\n\n## {section}\n\n{body.rstrip(chr(10))}\n"
-        return doc2
-    return "".join(out)
-
-
-_doc: "DocStore | None" = None
-
-
-def get_doc() -> DocStore:
-    global _doc
-    if _doc is None:
-        _doc = DocStore(DOC_PATH)
-    return _doc
+def get_plan() -> PlanStore:
+    """The shared income/expense ledger + notes, lazily opened."""
+    global _plan
+    if _plan is None:
+        _plan = PlanStore(PLAN_PATH, legacy_md=DOC_PATH, title=DOC_TITLE)
+    return _plan
 
 
 # ---------------------------------------------------------------- tools
@@ -325,47 +233,78 @@ def doc_url() -> str:
 
 
 def tool_doc_link() -> str:
-    """Return the shareable link to the editable wedding doc."""
+    """Return the shareable link to the editable wedding plan."""
     return doc_url()
 
 
-def tool_doc_read(section: str = "") -> str:
-    """Read the shared wedding doc (whole thing, or one section)."""
-    doc = get_doc().read()
-    if section:
-        body = _section_body(doc, section).strip()
-        return f"## {section}\n{body}" if body else f"(section '{section}' is empty)"
-    return doc.strip() or "(the doc is empty)"
+def tool_budget_summary() -> str:
+    """Totals: income received/expected, expenses paid/planned, cash on hand, balance."""
+    return get_plan().summary_text() + "\n\nlink: " + doc_url()
 
 
-def tool_doc_edit(mode: str, content: str, section: str = "") -> str:
-    """Edit the shared wedding doc. mode: append | set_section | overwrite."""
-    d = get_doc()
-    mode = (mode or "").strip().lower()
-    try:
-        if mode == "append":
-            d.append(content, section or None)
-        elif mode == "set_section":
-            if not section:
-                return "error: set_section needs a section name"
-            d.set_section(section, content)
-        elif mode == "overwrite":
-            d.overwrite(content)
-        else:
-            return "error: mode must be append, set_section, or overwrite"
-    except Exception as e:  # noqa: BLE001
-        return f"error: {e}"
-    return f"ok, doc updated. link: {doc_url()}"
+def tool_budget_list(kind: str = "", status: str = "") -> str:
+    """List ledger entries, optionally filtered by kind (income|expense)/status."""
+    return get_plan().entries_text(kind=kind.strip().lower(), status=status.strip().lower())
+
+
+def tool_budget_add(kind: str, item: str, amount, status: str = "actual",
+                    category: str = "", date: str = "") -> str:
+    """Add one income or expense entry."""
+    if kind not in ("income", "expense"):
+        return "error: kind must be 'income' or 'expense'"
+    if not item:
+        return "error: item is required"
+    e = get_plan().add(kind=kind, item=item, amount=amount, status=status,
+                       category=category, date=date)
+    return (f"ok, added [{e['id']}] {e['item']} {rupiah(e['amount'])} "
+            f"({e['kind']}, {e['status']})" + "\n" + get_plan().summary_text())
+
+
+def tool_budget_update(id: str, item: str = "", amount=None, kind: str = "",
+                       status: str = "", category: str = "", date: str = "") -> str:
+    """Update an entry by its id (get ids from budget_list)."""
+    e = get_plan().update(id, item=item or None, amount=amount, kind=kind or None,
+                          status=status or None, category=category or None, date=date or None)
+    if not e:
+        return f"error: no entry with id '{id}' (use budget_list to see ids)"
+    return f"ok, updated [{e['id']}] {e['item']} {rupiah(e['amount'])} ({e['kind']}, {e['status']})"
+
+
+def tool_budget_delete(id: str) -> str:
+    """Delete an entry by id."""
+    return f"ok, deleted {id}" if get_plan().delete(id) else f"error: no entry with id '{id}'"
+
+
+def tool_notes_read() -> str:
+    """Read the freeform notes attached to the plan."""
+    return get_plan().read().get("notes", "").strip() or "(no notes yet)"
+
+
+def tool_notes_append(text: str) -> str:
+    """Append a line to the freeform notes."""
+    p = get_plan()
+    cur = p.read().get("notes", "")
+    line = text.strip()
+    if not line.startswith(("-", "#", "*")):
+        line = "- " + line
+    p.set_notes((cur.rstrip("\n") + "\n" + line).strip() + "\n")
+    return "ok, note added"
 
 
 TOOLS = {
     "get_current_time": tool_get_current_time,
     "calculate": tool_calculate,
     "web_search": tool_web_search,
-    "doc_read": tool_doc_read,
-    "doc_edit": tool_doc_edit,
     "doc_link": tool_doc_link,
+    "budget_summary": tool_budget_summary,
+    "budget_list": tool_budget_list,
+    "budget_add": tool_budget_add,
+    "budget_update": tool_budget_update,
+    "budget_delete": tool_budget_delete,
+    "notes_read": tool_notes_read,
+    "notes_append": tool_notes_append,
 }
+
 
 TOOL_SCHEMA = [
     {
@@ -410,15 +349,99 @@ TOOL_SCHEMA = [
     {
         "type": "function",
         "function": {
-            "name": "doc_read",
-            "description": "Read the couple's shared wedding-planning doc (Markdown). "
-                           "Use when asked what's planned, the budget, guest list, to-dos, etc. "
-                           "Optionally pass a section name to read just that part.",
+            "name": "budget_summary",
+            "description": "Totals of the wedding money plan: income already received, income still "
+                           "expected, expenses paid, expenses planned, cash on hand, projected balance. "
+                           "Use for 'berapa sisa budget', 'total pemasukan', 'how much do we have'.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "budget_list",
+            "description": "List the ledger entries (with their ids). Filter by kind "
+                           "(income|expense) and/or status (actual|expected).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "section": {"type": "string", "description": "e.g. Budget, Guests, Vendors, To-dos, Notes"},
+                    "kind": {"type": "string", "enum": ["income", "expense"]},
+                    "status": {"type": "string", "enum": ["actual", "expected"]},
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "budget_add",
+            "description": "Add one income or expense. status='actual' means already "
+                           "received/paid; status='expected' means still coming / only planned. "
+                           "Amount is in IDR; accept plain numbers like 5000000.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["income", "expense"]},
+                    "item": {"type": "string", "description": "e.g. 'DP catering', 'amplop om Budi'"},
+                    "amount": {"type": "integer"},
+                    "status": {"type": "string", "enum": ["actual", "expected"]},
+                    "category": {"type": "string"},
+                    "date": {"type": "string", "description": "YYYY-MM-DD"},
+                },
+                "required": ["kind", "item", "amount"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "budget_update",
+            "description": "Change an existing entry by id (call budget_list first to find the id). "
+                           "Only pass the fields you want to change.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "item": {"type": "string"},
+                    "amount": {"type": "integer"},
+                    "kind": {"type": "string", "enum": ["income", "expense"]},
+                    "status": {"type": "string", "enum": ["actual", "expected"]},
+                    "category": {"type": "string"},
+                    "date": {"type": "string"},
+                },
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "budget_delete",
+            "description": "Delete a ledger entry by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notes_read",
+            "description": "Read the freeform wedding notes (non-money stuff: ideas, vendors, to-dos).",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notes_append",
+            "description": "Add a line to the freeform wedding notes.",
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
             },
         },
     },
@@ -429,26 +452,6 @@ TOOL_SCHEMA = [
             "description": "Return the shareable web link to the editable wedding doc. "
                            "Use when asked for the doc link / where to edit it.",
             "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "doc_edit",
-            "description": "Update the shared wedding doc. Use when asked to add/change/record "
-                           "anything about the wedding (a task, a cost, a guest, a vendor, a note). "
-                           "mode='append' adds a line (optionally under a section); "
-                           "mode='set_section' replaces a whole section; "
-                           "mode='overwrite' replaces the entire doc (rare).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "mode": {"type": "string", "enum": ["append", "set_section", "overwrite"]},
-                    "content": {"type": "string"},
-                    "section": {"type": "string", "description": "section name for append/set_section"},
-                },
-                "required": ["mode", "content"],
-            },
         },
     },
 ]
@@ -609,7 +612,7 @@ def run_webhook(waha: "Waha") -> int:
     # Token guards every public route (incl. /webhook, since the port is exposed).
     qs = f"?token={DOC_TOKEN}" if DOC_TOKEN else ""
     hook_url = base + WEBHOOK_PATH + qs
-    get_doc()  # create the doc file up front
+    get_plan()  # create/migrate the plan file up front
 
     # Bring the session up and wait for it to link, so webhook registration sticks
     # even across reboots (QR scan happens out of band via /auth/qr).
@@ -671,11 +674,13 @@ def run_webhook(waha: "Waha") -> int:
             if path == "/doc":
                 if not self._token_ok(q):
                     return self._send(403, "forbidden")
-                return self._send(200, _doc_page_html((q.get("token") or [""])[0]), "text/html; charset=utf-8")
-            if path == "/doc/raw":
+                page = render_page((q.get("token") or [""])[0], get_plan())
+                return self._send(200, page, "text/html; charset=utf-8")
+            if path == "/api/plan":
                 if not self._token_ok(q):
                     return self._send(403, "forbidden")
-                return self._send(200, get_doc().read(), "text/markdown; charset=utf-8")
+                return self._send(200, json.dumps(get_plan().read(), ensure_ascii=False),
+                                  "application/json; charset=utf-8")
             return self._send(404, "not found")
 
         def do_POST(self):
@@ -696,18 +701,16 @@ def run_webhook(waha: "Waha") -> int:
                         daemon=True,
                     ).start()
                 return
-            if path == "/doc":
+            if path == "/api/plan":
                 if not self._token_ok(q):
                     return self._send(403, "forbidden")
-                from urllib.parse import parse_qs as _pq
-                content = (_pq(body.decode("utf-8", "replace")).get("content") or [""])[0]
-                get_doc().overwrite(content)
-                tok = (q.get("token") or [""])[0]
-                # redirect back to the viewer
-                self.send_response(303)
-                self.send_header("location", f"/doc?token={tok}&saved=1")
-                self.end_headers()
-                return
+                try:
+                    payload = json.loads(body or b"{}")
+                except Exception:  # noqa: BLE001
+                    return self._send(400, "bad json")
+                get_plan().replace_all(payload.get("entries") or [], payload.get("notes"))
+                return self._send(200, json.dumps(get_plan().read(), ensure_ascii=False),
+                                  "application/json; charset=utf-8")
             return self._send(404, "not found")
 
     srv = ThreadingHTTPServer((WEBHOOK_HOST, WEBHOOK_PORT), Handler)
@@ -719,60 +722,6 @@ def run_webhook(waha: "Waha") -> int:
     except KeyboardInterrupt:
         log("bye")
     return 0
-
-
-def _doc_page_html(token: str) -> str:
-    content = get_doc().read()
-    esc = html.escape(content)
-    tok = html.escape(token)
-    return f"""<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(DOC_TITLE)}</title>
-<style>
-  :root {{ color-scheme: light dark; }}
-  * {{ box-sizing: border-box; }}
-  body {{ margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-         background:#0f1115; color:#e6e6e6; }}
-  header {{ padding:14px 16px; background:#161a21; border-bottom:1px solid #262c36;
-            display:flex; align-items:center; justify-content:space-between; gap:12px; }}
-  header h1 {{ font-size:17px; margin:0; }}
-  .wrap {{ max-width:820px; margin:0 auto; padding:16px; }}
-  textarea {{ width:100%; min-height:62vh; padding:12px; font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;
-              background:#0b0d11; color:#e6e6e6; border:1px solid #2a313c; border-radius:10px; resize:vertical; }}
-  .row {{ display:flex; gap:10px; align-items:center; margin-top:12px; }}
-  button {{ background:#2f6df6; color:#fff; border:0; padding:11px 18px; border-radius:10px;
-            font-size:15px; font-weight:600; }}
-  .hint {{ color:#8b94a3; font-size:13px; }}
-  .saved {{ color:#39d98a; font-size:14px; }}
-</style></head>
-<body>
-  <header><h1>💍 {html.escape(DOC_TITLE)}</h1>
-    <span class="hint">shared · edited by you, Princess &amp; @bang</span></header>
-  <div class="wrap">
-    <form method="POST" action="/doc?token={tok}">
-      <textarea name="content" spellcheck="false">{esc}</textarea>
-      <div class="row">
-        <button type="submit">Save</button>
-        <span class="hint">Markdown. Use <code>## Section</code> headings. Last save wins.</span>
-        <span id="s" class="saved"></span>
-      </div>
-    </form>
-  </div>
-  <script>
-    if (new URLSearchParams(location.search).get('saved')) {{
-      document.getElementById('s').textContent = 'saved ✓';
-    }}
-  </script>
-</body></html>"""
-
-
-def _safe(fn, *a) -> None:
-    try:
-        fn(*a)
-    except Exception as e:  # noqa: BLE001
-        log("handler error:", e)
 
 
 # ---------------------------------------------------------------- poll mode
