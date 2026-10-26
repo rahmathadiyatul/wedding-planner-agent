@@ -51,11 +51,19 @@ services:
       SYSTEM_PROMPT: ${SYSTEM_PROMPT:-}
       # tools
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
-      # shared wedding doc
+      # shared wedding doc / money tracker
       DOC_PATH: /data/wedding.md
+      PLAN_PATH: /data/plan.json
+      SETTINGS_PATH: /data/settings.json
       DOC_TOKEN: ${DOC_TOKEN}
       DOC_PUBLIC_BASE: ${DOC_PUBLIC_BASE:-}
       DOC_TITLE: ${DOC_TITLE:-Wedding Plan}
+      # models switchable from chat via `@bang /model ...`
+      MODEL_CHOICES: ${MODEL_CHOICES:-openai/gpt-5.4-mini,openai/gpt-5.4}
+      # observability (optional; no-ops when unset)
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-https://cloud.langfuse.com}
     volumes:
       - bot-data:/data
     networks: [botnet]

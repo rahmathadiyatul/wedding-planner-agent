@@ -83,6 +83,15 @@ WEBHOOK_EVENTS = [e.strip() for e in os.environ.get("WEBHOOK_EVENTS", "message.a
 # page + edited by the bot's tools. DOC_TOKEN gates every public route.
 DOC_PATH = os.environ.get("DOC_PATH", "/data/wedding.md")  # legacy markdown, migrated into notes
 PLAN_PATH = os.environ.get("PLAN_PATH", "/data/plan.json")
+SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/data/settings.json")
+
+# Models the couple can switch between from chat (`@bang /model ...`).
+MODEL_CHOICES = [m.strip() for m in os.environ.get(
+    "MODEL_CHOICES", "openai/gpt-5.4-mini,openai/gpt-5.4").split(",") if m.strip()]
+MODEL_ALIASES = {"mini": "openai/gpt-5.4-mini", "kecil": "openai/gpt-5.4-mini",
+                 "big": "openai/gpt-5.4", "besar": "openai/gpt-5.4", "pro": "openai/gpt-5.4"}
+# Kept modest on purpose: this runs on a 1GB box and base64 inflates by ~33%.
+MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", str(4 * 1024 * 1024)))
 DOC_TOKEN = os.environ.get("DOC_TOKEN", "")
 DOC_PUBLIC_BASE = os.environ.get("DOC_PUBLIC_BASE", "").rstrip("/")  # e.g. http://1.2.3.4:8080
 DOC_TITLE = os.environ.get("DOC_TITLE", "Wedding Plan")
@@ -111,6 +120,15 @@ class Waha:
 
     def version(self) -> dict:
         return self._c.get("/api/version").raise_for_status().json()
+
+    def fetch_bytes(self, url: str, limit: int = 8 * 1024 * 1024) -> bytes:
+        """Download a media file from WAHA (auth header included), size-capped."""
+        r = self._c.get(url)
+        r.raise_for_status()
+        data = r.content
+        if len(data) > limit:
+            raise ValueError(f"media too large: {len(data)} bytes > {limit}")
+        return data
 
     def session_status(self) -> str | None:
         r = self._c.get(f"/api/sessions/{self.session}")
@@ -157,7 +175,27 @@ class Waha:
 
 # ---------------------------------------------------------------- shared plan
 
+import obs  # noqa: E402
 from plan import PlanStore, rupiah, render_page  # noqa: E402
+from settings import Settings  # noqa: E402
+
+_settings = Settings(SETTINGS_PATH)
+
+
+def current_model() -> str:
+    """Active LLM, switchable from chat and persisted; env is just the default."""
+    return _settings.get("model") or LLM_MODEL
+
+
+def set_model(name: str) -> str:
+    """Resolve an alias/full name against the allowlist and persist it."""
+    want = (name or "").strip()
+    want = MODEL_ALIASES.get(want.lower(), want)
+    if want not in MODEL_CHOICES:
+        raise ValueError(f"unknown model '{name}'. pilihan: {', '.join(MODEL_CHOICES)}")
+    _settings.set("model", want)
+    return want
+
 
 _plan: "PlanStore | None" = None
 
@@ -478,18 +516,29 @@ def llm_chat(messages: list[dict]) -> str:
         "do not rely on memory for anything time-sensitive."
     )
     convo = [{"role": "system", "content": SYSTEM_PROMPT + "\n\n" + grounding}] + messages
+    model = current_model()
+    trace = obs.trace("whatsapp-message", input=messages, metadata={"model": model})
     for _ in range(5):  # cap tool-call rounds
-        resp = client.post(
-            "/chat/completions",
-            json={"model": LLM_MODEL, "messages": convo, "tools": TOOL_SCHEMA},
-        )
-        resp.raise_for_status()
-        msg = resp.json()["choices"][0]["message"]
+        gen = trace.generation("llm", model=model, input=convo)
+        try:
+            resp = client.post(
+                "/chat/completions",
+                json={"model": model, "messages": convo, "tools": TOOL_SCHEMA},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:  # noqa: BLE001
+            gen.end(error=e)
+            trace.end(error=e)
+            raise
+        msg = data["choices"][0]["message"]
+        gen.end(output=msg, usage=data.get("usage"))
         calls = msg.get("tool_calls") or []
         if not calls:
             text = (msg.get("content") or "").strip()
             # Defensive: strip a leading "[me]"/"[name]" tag if the model ever adds one.
             text = re.sub(r"^\[[^\]]{1,20}\]\s*", "", text)
+            trace.end(output=text)
             return text or "(no response)"
         convo.append(msg)
         for call in calls:
@@ -498,9 +547,16 @@ def llm_chat(messages: list[dict]) -> str:
                 args = json.loads(call["function"].get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
-            result = TOOLS[fn](**args) if fn in TOOLS else f"error: unknown tool {fn}"
-            log(f"  tool {fn}({args}) -> {result}")
+            span = trace.span(f"tool:{fn}", input=args)
+            try:
+                result = TOOLS[fn](**args) if fn in TOOLS else f"error: unknown tool {fn}"
+                span.end(output=result)
+            except Exception as e:  # noqa: BLE001
+                result = f"error: {e}"
+                span.end(error=e)
+            log(f"  tool {fn}({args}) -> {str(result)[:160]}")
             convo.append({"role": "tool", "tool_call_id": call["id"], "content": str(result)})
+    trace.end(output="(stopped: too many tool calls)")
     return "(stopped: too many tool calls)"
 
 
@@ -551,9 +607,40 @@ def _already_handled(mid: str | None) -> bool:
     return False
 
 
-def handle_trigger(waha: "Waha", chat_id: str, prompt: str) -> None:
+def handle_command(waha: "Waha", chat_id: str, prompt: str) -> bool:
+    """Handle `/...` control commands locally (no LLM). True if consumed."""
+    if not prompt.startswith("/"):
+        return False
+    parts = prompt[1:].split()
+    cmd = parts[0].lower() if parts else ""
+    arg = " ".join(parts[1:]).strip()
+    if cmd in ("model", "models"):
+        if not arg:
+            reply = ("Model sekarang: " + current_model() + "\nPilihan: "
+                     + ", ".join(MODEL_CHOICES)
+                     + "\nGanti: " + TRIGGER_PREFIX + " /model mini  atau  "
+                     + TRIGGER_PREFIX + " /model besar")
+        else:
+            try:
+                reply = "Oke, model diganti ke " + set_model(arg)
+            except ValueError as e:
+                reply = str(e)
+    elif cmd in ("help", "bantuan"):
+        reply = ("Perintah: /model (lihat & ganti model), /help.\n"
+                 "Selain itu tanya biasa aja; aku bisa catat pemasukan/pengeluaran, "
+                 "baca dokumen, cari di web, dan baca foto.")
+    else:
+        return False
+    try:
+        waha.send_text(chat_id, REPLY_PREFIX + reply)
+    except Exception as e:  # noqa: BLE001
+        log("send error:", e)
+    return True
+
+
+def handle_trigger(waha: "Waha", chat_id: str, prompt: str, images: list[str] | None = None) -> None:
     """Fetch context, ask the LLM, and reply into the chat."""
-    log("trigger:", prompt)
+    log("trigger:", prompt, f"(+{len(images)} image)" if images else "")
     history = []
     try:
         msgs = waha.get_messages(chat_id, HISTORY_LIMIT)
@@ -561,19 +648,56 @@ def handle_trigger(waha: "Waha", chat_id: str, prompt: str) -> None:
             history = build_history(msgs)
     except Exception as e:  # noqa: BLE001
         log("warn: history fetch failed:", e)
-    # The triggering message is usually already the last history item; only add
-    # it if it isn't, so we don't duplicate the current question.
-    if not (history and history[-1]["role"] == "user" and history[-1]["content"] == prompt):
+    if images:
+        # Multimodal turn: text + image parts (OpenAI-compatible content array).
+        parts: list[dict] = [{"type": "text", "text": prompt or "Tolong lihat gambar ini."}]
+        parts += [{"type": "image_url", "image_url": {"url": u}} for u in images]
+        if history and history[-1]["role"] == "user" and history[-1]["content"] == prompt:
+            history.pop()
+        history.append({"role": "user", "content": parts})
+    elif not (history and history[-1]["role"] == "user" and history[-1]["content"] == prompt):
+        # The triggering message is usually already the last history item; only add
+        # it if it isn't, so we don't duplicate the current question.
         history.append({"role": "user", "content": prompt})
     try:
         answer = llm_chat(history)
     except Exception as e:  # noqa: BLE001
+        log("LLM error:", repr(e))
+        obs.error("llm-error", e, metadata={"model": current_model(), "has_image": bool(images)})
         answer = f"(LLM error: {e})"
     log("reply:", answer[:120])
     try:
         waha.send_text(chat_id, REPLY_PREFIX + answer)
     except Exception as e:  # noqa: BLE001
         log("send error:", e)
+        obs.error("send-error", e, metadata={"chat_id": chat_id})
+
+
+def fetch_images(waha: "Waha", payload: dict) -> list[str]:
+    """Pull any image attached to the message and return it as a data: URI.
+
+    WAHA serves media from its own host, so the URL it reports (often
+    localhost:3000) is rewritten to the base URL we actually reach it on.
+    """
+    media = payload.get("media") or {}
+    url = media.get("url") if isinstance(media, dict) else None
+    mime = (media.get("mimetype") if isinstance(media, dict) else "") or ""
+    if not url or not mime.startswith("image/"):
+        return []
+    try:
+        parsed = urlparse(url)
+        base = urlparse(WAHA_BASE_URL)
+        if parsed.hostname in ("localhost", "127.0.0.1", base.hostname):
+            url = WAHA_BASE_URL.rstrip("/") + parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        data = waha.fetch_bytes(url, limit=MAX_IMAGE_BYTES)
+        if not data:
+            return []
+        import base64
+        return [f"data:{mime};base64,{base64.b64encode(data).decode()}"]
+    except Exception as e:  # noqa: BLE001
+        log("image fetch failed:", repr(e))
+        obs.error("image-fetch-error", e, metadata={"url": url})
+        return []
 
 
 def process_event(waha: "Waha", payload: dict) -> None:
@@ -596,7 +720,9 @@ def process_event(waha: "Waha", payload: dict) -> None:
     if _already_handled(mid):
         return
     prompt = text[len(TRIGGER_PREFIX):].strip()
-    handle_trigger(waha, chat_id, prompt)
+    if handle_command(waha, chat_id, prompt):
+        return
+    handle_trigger(waha, chat_id, prompt, images=fetch_images(waha, payload))
 
 
 # ---------------------------------------------------------------- webhook mode
@@ -729,6 +855,7 @@ def _safe(fn, *a) -> None:
         fn(*a)
     except Exception as e:  # noqa: BLE001
         log("handler error:", repr(e))
+        obs.error("handler-error", e, metadata={"fn": getattr(fn, "__name__", str(fn))})
 
 
 # ---------------------------------------------------------------- poll mode
