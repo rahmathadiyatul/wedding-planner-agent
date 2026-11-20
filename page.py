@@ -49,13 +49,33 @@ _PAGE = r"""<!doctype html>
   .side{width:212px;flex:0 0 212px;background:var(--card);border-right:1px solid var(--line);
         display:flex;flex-direction:column;gap:4px;padding:16px 12px;position:sticky;top:0;height:100vh}
   .brand{font-size:16px;font-weight:700;padding:4px 8px 14px}
-  .nav{display:flex;align-items:center;gap:10px;background:transparent;border:0;color:var(--muted);
-       padding:10px 12px;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;text-align:left;width:100%}
-  .nav:hover{background:#1b212b;color:var(--fg)}
+  /* every row: a fixed 20px icon slot, so the labels line up no matter the glyph */
+  .nav{display:flex;align-items:center;gap:11px;background:transparent;border:0;color:var(--muted);
+       width:100%;text-align:left;padding:10px;border-radius:10px;cursor:pointer;
+       font:600 14px inherit;white-space:nowrap;overflow:hidden}
+  .nav:hover{background:#151a22;color:var(--fg)}
   .nav.on{background:#17233d;color:#fff}
-  .nav .ic{font-size:15px}
-  .nav .ct{margin-left:auto;font-size:11px;color:var(--muted);background:#0b0d11;
-           border:1px solid var(--line);border-radius:999px;padding:1px 7px}
+  .ic{width:20px;height:20px;flex:0 0 20px;fill:none;stroke:currentColor;stroke-width:1.7;
+      stroke-linecap:round;stroke-linejoin:round}
+  .nav .lb{flex:1;overflow:hidden;text-overflow:ellipsis}
+  .nav .ct{font-size:11px;color:var(--muted);background:#0b0d11;border:1px solid var(--line);
+           border-radius:999px;padding:1px 7px;flex:0 0 auto}
+  .nav.on .ct{color:#fff}
+  .brand{display:flex;align-items:center;gap:11px;font-size:15px;font-weight:700;
+         padding:6px 10px 14px;white-space:nowrap;overflow:hidden}
+  .brand .ic{color:var(--accent)}
+  .brand .bt{flex:1;overflow:hidden;text-overflow:ellipsis}
+  .collapse{background:transparent;border:0;color:var(--muted);cursor:pointer;padding:2px;
+            flex:0 0 auto;display:flex}
+  .collapse svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;
+                stroke-linecap:round;stroke-linejoin:round;transition:transform .18s}
+  .collapse:hover{color:var(--fg)}
+  /* collapsed: an icon rail. Labels and counts fold away, icons stay centred. */
+  .side.mini{width:62px;flex:0 0 62px;padding:16px 10px}
+  .side.mini .lb,.side.mini .ct,.side.mini .bt,.side.mini .sidefoot{display:none}
+  .side.mini .nav,.side.mini .brand{justify-content:center;gap:0;padding-left:0;padding-right:0}
+  .side.mini .collapse svg{transform:rotate(180deg)}
+  .side.mini .brand{padding-bottom:12px}
   .sidefoot{margin-top:auto;color:var(--muted);font-size:12px;padding:8px}
 
   .main{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -106,6 +126,7 @@ _PAGE = r"""<!doctype html>
   tr.sub .tw{color:var(--accent);opacity:.55}
   .pg{display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:10px;flex-wrap:wrap}
   .empty{padding:26px;text-align:center;color:var(--muted)}
+  .card .s.warn{color:var(--warn)}
   .mctl{display:none;gap:8px;margin-bottom:10px}
   .mctl input{flex:1} .mctl select{width:auto}
 
@@ -186,6 +207,19 @@ _PAGE = r"""<!doctype html>
         border-radius:999px;padding:2px 8px}
   .chip.pr{color:var(--in);border-color:#20392c}
 
+  /* settings */
+  .sh{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;
+      margin:22px 0 8px;font-weight:700}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  .sm{font-size:12px;margin-top:4px}
+  .banner{border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;
+          background:#12161d;display:flex;align-items:center;gap:8px}
+  .banner.ok{border-color:#20392c;color:var(--in)}
+  .banner.warn{border-color:#3a3220;color:var(--warn)}
+  .prow{display:flex;gap:8px;margin-top:8px;align-items:center}
+  .prow input{flex:1;min-width:120px}
+  @media (max-width:760px){ .grid2{grid-template-columns:1fr} }
+
   /* save bar */
   .savebar{position:sticky;bottom:0;background:linear-gradient(180deg,rgba(15,17,21,0),var(--bg) 40%);
            padding:14px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
@@ -196,6 +230,10 @@ _PAGE = r"""<!doctype html>
           flex-direction:row;align-items:center;gap:6px;padding:10px;overflow-x:auto}
     .brand{padding:0 8px 0 4px;font-size:15px;white-space:nowrap}
     .nav{width:auto;padding:8px 12px;white-space:nowrap}
+    .collapse{display:none}
+    .side.mini{width:auto;flex:none;padding:10px}
+    .side.mini .lb{display:inline}
+    .side.mini .nav{gap:11px;padding:8px 12px}
     .sidefoot{display:none}
     .wrap{padding:12px}
     .cards{grid-template-columns:repeat(2,1fr)} .card .v{font-size:16px} .big{grid-column:span 2}
@@ -226,10 +264,27 @@ _PAGE = r"""<!doctype html>
 </style></head>
 <body>
 <div class="app">
-  <aside class="side">
-    <div class="brand">&#128141; __TITLE__</div>
-    <button class="nav on" id="nav-fin" onclick="setView('fin')"><span class="ic">&#128176;</span> Keuangan</button>
-    <button class="nav" id="nav-kan" onclick="setView('kan')"><span class="ic">&#9745;</span> To-do <span class="ct" id="kan-ct">0</span></button>
+  <aside class="side" id="side">
+    <div class="brand">
+      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7 8.5 3h7L12 7Z"/>
+        <circle cx="12" cy="14.5" r="6"/></svg>
+      <span class="bt">__TITLE__</span>
+      <button class="collapse" id="collapse" onclick="toggleSide()" title="Lipat sidebar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/></svg>
+      </button>
+    </div>
+    <button class="nav on" id="nav-fin" onclick="setView('fin')" title="Keuangan">
+      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h18v12H3z"/>
+        <circle cx="12" cy="13" r="2.6"/></svg>
+      <span class="lb">Keuangan</span></button>
+    <button class="nav" id="nav-kan" onclick="setView('kan')" title="To-do">
+      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v15H4z"/>
+        <path d="m8 12 2.6 2.6L16 9.4"/></svg>
+      <span class="lb">To-do</span><span class="ct" id="kan-ct">0</span></button>
+    <button class="nav" id="nav-set" onclick="setView('set')" title="Settings">
+      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/>
+        <path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></svg>
+      <span class="lb">Settings</span></button>
     <div class="sidefoot">bersama &middot; @bang</div>
   </aside>
 
@@ -288,6 +343,54 @@ _PAGE = r"""<!doctype html>
         </div>
       </section>
 
+      <!-- ============== SETTINGS ============== -->
+      <section id="v-set" class="view">
+        <h2>Pengingat email</h2>
+        <div id="mailstatus" class="banner"></div>
+
+        <h3 class="sh">Pengirim</h3>
+        <div class="grid2">
+          <div><label>Alamat pengirim</label>
+            <input id="m-from" placeholder="wedding@domainmu.com"
+                   oninput="mset('from_email',this.value)">
+            <div class="muted sm">harus sudah <b>verified sender</b> di Brevo</div></div>
+          <div><label>Nama pengirim</label>
+            <input id="m-fromname" placeholder="Wedding Planner"
+                   oninput="mset('from_name',this.value)"></div>
+        </div>
+
+        <h3 class="sh">Daftar penerima</h3>
+        <div class="muted sm">Nama di sini yang muncul sebagai pilihan di tiap to-do.</div>
+        <div id="m-people"></div>
+        <button class="btn" style="margin-top:8px" onclick="addPerson()">+ Tambah orang</button>
+
+        <h3 class="sh">Default</h3>
+        <div class="grid2">
+          <div><label>Penerima default</label>
+            <div class="whos" id="m-default-to"></div>
+            <div class="muted sm">dipakai kalau to-do-nya nggak milih siapa-siapa</div></div>
+          <div><label>Jarak pengingat default</label>
+            <select id="m-lead" onchange="mset('default_lead',this.value)"></select>
+            <label style="margin-top:10px">Jam default</label>
+            <input id="m-time" type="time" onchange="mset('default_time',this.value)">
+            <div class="muted sm">dipakai untuk to-do yang punya tanggal tapi tanpa jam</div></div>
+        </div>
+
+        <h3 class="sh">Saklar</h3>
+        <label class="who" style="width:max-content">
+          <input type="checkbox" id="m-on" onchange="mset('enabled',this.checked)">
+          Pengingat email aktif</label>
+
+        <div class="bar" style="margin-top:18px">
+          <button class="btn" onclick="mailTest()">Kirim email tes</button>
+          <span id="m-testmsg" class="muted sm"></span>
+        </div>
+        <div class="muted sm" style="margin-top:14px">
+          Kunci Brevo (API key / SMTP password) tetap di <code>.env</code> server, nggak
+          pernah dikirim ke halaman ini.
+        </div>
+      </section>
+
     </div>
 
     <div class="savebar">
@@ -315,12 +418,19 @@ const tmp = () => 'tmp-'+Math.random().toString(36).slice(2,9);
 let VIEW='fin';
 function setView(v){
   VIEW=v;
-  document.getElementById('v-fin').className='view'+(v==='fin'?' on':'');
-  document.getElementById('v-kan').className='view'+(v==='kan'?' on':'');
-  document.getElementById('nav-fin').className='nav'+(v==='fin'?' on':'');
-  document.getElementById('nav-kan').className='nav'+(v==='kan'?' on':'');
+  ['fin','kan','set'].forEach(function(k){
+    document.getElementById('v-'+k).className='view'+(v===k?' on':'');
+    document.getElementById('nav-'+k).className='nav'+(v===k?' on':'');
+  });
+  try{ localStorage.setItem('view',v); }catch(e){}
   if(v==='kan') renderBoard();
+  if(v==='set') renderSettings();
 }
+function toggleSide(){
+  const el=document.getElementById('side'), mini=el.classList.toggle('mini');
+  try{ localStorage.setItem('mini',mini?'1':''); }catch(e){}
+}
+try{ if(localStorage.getItem('mini')) document.getElementById('side').classList.add('mini'); }catch(e){}
 
 /* ================= KEUANGAN ================= */
 const COLS = [
@@ -348,17 +458,23 @@ const digits = s => { const neg=String(s).trim().startsWith('-');
   const d=String(s||'').replace(/[^0-9]/g,''); const n=d?parseInt(d,10):0; return neg?-n:n; };
 const byId = id => DATA.entries.find(e=>e.id===id);
 const kids = id => DATA.entries.filter(e=>e.parent===id);
-const amountOf = e => { const k=kids(e.id); return k.length ? k.reduce((a,c)=>a+amountOf(c),0) : (Number(e.amount)||0); };
+/* Sub-items win only once one of them carries a number; until then the
+   parent's own estimate stands (see amount_of in plan.py). */
+const kidSum = e => kids(e.id).reduce((a,c)=>a+amountOf(c),0);
+const amountOf = e => { const s=kidSum(e); return s || (Number(e.amount)||0); };
+const blankCount = () => { const par=new Set(DATA.entries.filter(e=>e.parent).map(e=>e.parent));
+  return DATA.entries.filter(e=>!par.has(e.id) && !(Number(e.amount)||0)).length; };
 const countTop = k => DATA.entries.filter(e=>e.kind===k && !e.parent).length;
 
 function updateSummary(){
-  const all=DATA.entries, parents=new Set(all.filter(e=>e.parent).map(e=>e.parent));
-  const lv=all.filter(e=>!parents.has(e.id));
-  const t=(k,s)=>lv.filter(e=>e.kind===k&&e.status===s).reduce((a,e)=>a+(Number(e.amount)||0),0);
+  const tops=DATA.entries.filter(e=>!e.parent);
+  const t=(k,s)=>tops.filter(e=>e.kind===k&&e.status===s).reduce((a,e)=>a+amountOf(e),0);
   const ia=t('income','actual'), ie=t('income','expected'), ea=t('expense','actual'), ee=t('expense','expected');
   const cards=[
     ['Uang di tangan', rp(ia-ea), 'diterima - dibayar', (ia-ea)>=0?'in':'out', true],
-    ['Saldo proyeksi', rp((ia+ie)-(ea+ee)), 'semua pemasukan - pengeluaran', ((ia+ie)-(ea+ee))>=0?'in':'out', true],
+    ['Saldo proyeksi', rp((ia+ie)-(ea+ee)),
+       'semua pemasukan - pengeluaran' + (blankCount()? ' · '+blankCount()+' baris belum ada nominal':''),
+       ((ia+ie)-(ea+ee))>=0?'in':'out', true],
     ['Pemasukan diterima', rp(ia), '', 'in', false],
     ['Pemasukan diharapkan', rp(ie), '', 'in', false],
     ['Pengeluaran dibayar', rp(ea), '', 'out', false],
@@ -366,7 +482,9 @@ function updateSummary(){
   ];
   document.getElementById('cards').innerHTML = cards.map(function(c){
     return '<div class="card'+(c[4]?' big':'')+'"><div class="l">'+c[0]+'</div>'+
-           '<div class="v '+c[3]+'">'+c[1]+'</div>'+(c[2]?'<div class="s">'+c[2]+'</div>':'')+'</div>'; }).join('');
+           '<div class="v '+c[3]+'">'+c[1]+'</div>'+
+           (c[2]?'<div class="s'+(/belum ada nominal/.test(c[2])?' warn':'')+'">'+c[2]+'</div>':'')+
+           '</div>'; }).join('');
   document.getElementById('tab-income').textContent='Pemasukan ('+countTop('income')+')';
   document.getElementById('tab-expense').textContent='Pengeluaran ('+countTop('expense')+')';
 }
@@ -406,7 +524,7 @@ function renderHead(){
   }).join('')+'<th></th>';
 }
 function rowHtml(e,isSub,isLast){
-  const k=kids(e.id), computed=k.length>0, amt=computed?amountOf(e):(Number(e.amount)||0);
+  const k=kids(e.id), ksum=kidSum(e), computed=ksum>0, amt=computed?ksum:(Number(e.amount)||0);
   const open=computed&&SUBOPEN.has(e.id);
   const cls=(isSub?'sub':'')+(computed&&open?' hask':'')+(isSub&&isLast?' lastsub':'');
   const caret=isSub?'<span class="tw">&#8627;</span>'
@@ -420,7 +538,7 @@ function rowHtml(e,isSub,isLast){
     '<td data-l="Status">'+sel+'</td>'+
     '<td class="ic" data-l="Item">'+caret+'<input value="'+esc(e.item)+'" '+
       'placeholder="'+(isSub?'rincian...':'mis. Administrasi KUA')+'" oninput="upd(\''+e.id+'\',\'item\',this.value)"></td>'+
-    '<td class="amt" data-l="Nominal"><input inputmode="numeric" '+(computed?'disabled title="total dari sub-item"':'')+' '+
+    '<td class="amt" data-l="Nominal"><input inputmode="numeric" '+(computed?'disabled title="total dari sub-item (isi nominalnya di sub-item)"':'')+' '+
       'value="'+(amt?amt.toLocaleString('id-ID'):'')+'" oninput="upd(\''+e.id+'\',\'amount\',digits(this.value))" '+
       'onblur="this.value=this.value?digits(this.value).toLocaleString(\'id-ID\'):\'\'"></td>'+
     '<td data-l="Kategori"><input value="'+esc(e.category)+'" oninput="upd(\''+e.id+'\',\'category\',this.value)"></td>'+
@@ -508,10 +626,9 @@ function today(){ CUR=new Date(); renderBoard(); }
 
 /* true when the scheduler would mail about this to-do */
 function armed(t){
-  if(!MAIL.enabled || !t.due || t.status==='done') return false;
-  const lead=(t.remind||MAIL.default_lead||'');
-  if(lead==='off') return false;
-  return !!((t.remind_to||'').trim() || (MAIL.default_to||'').trim());
+  if(!MAIL.ready || !t.due || t.status==='done') return false;
+  if((t.remind||'')==='off') return false;
+  return !!((t.remind_to||'').trim() || (MAIL.eff_to||'').trim());
 }
 function pillHtml(t){
   const st=KST[t.status]||KST.todo, ks=tKids(t.id), done=ks.filter(k=>k.status==='done').length;
@@ -621,25 +738,33 @@ function tupd(id,k,v){ const t=tById(id); if(!t) return; t[k]=v; }
 function setTime(id,v){ tupd(id,'time',v); renderDrw(); }
 
 /* ---- reminder controls (email, via Brevo) ---- */
-const LEADS=[['','default ('+(MAIL.default_lead||'1d')+')'],['off','jangan ingatkan'],
-             ['15m','15 menit'],['30m','30 menit'],['1h','1 jam'],['3h','3 jam'],
-             ['1d','1 hari'],['2d','2 hari'],['1w','1 minggu']];
+function leadOpts(){
+  const out=[['','ikut Settings ('+fmtLead(MAIL.eff_lead)+')'],['off','jangan ingatkan']];
+  (MAIL.leads||[]).forEach(function(l,i){ out.push([l,(MAIL.lead_labels||[])[i]||l]); });
+  return out;
+}
+function fmtLead(l){
+  const i=(MAIL.leads||[]).indexOf(l);
+  return i===-1?(l||'-'):(MAIL.lead_labels||[])[i];
+}
 function remindHtml(c){
-  if(!MAIL.enabled)
+  if(!MAIL.ready)
     return '<label>Pengingat</label><div class="muted" style="font-size:12px">'+
-           'email mati: '+esc(MAIL.why||'belum dikonfigurasi')+'</div>';
+           'email belum jalan: '+esc(MAIL.why||'belum dikonfigurasi')+
+           ' &mdash; <a href="#" onclick="setView(\'set\');return false">buka Settings</a></div>';
   const to=(c.remind_to||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
-  const opts=LEADS.map(function(l){
+  const opts=leadOpts().map(function(l){
     return '<option value="'+l[0]+'"'+((c.remind||'')===l[0]?' selected':'')+'>'+l[1]+'</option>';
   }).join('');
-  const who=(MAIL.people||[]).map(function(n){
-    const on=to.length?to.indexOf(n)!==-1:false;
+  const who=(MAIL.people||[]).filter(p=>p.name).map(function(p){
+    const n=p.name, on=to.indexOf(n.toLowerCase())!==-1;
     return '<label class="who"><input type="checkbox" '+(on?'checked':'')+
-      ' onchange="setWho(\''+c.id+'\',\''+n+'\',this.checked)"> '+esc(n)+'</label>';
-  }).join('') || '<span class="muted" style="font-size:12px">MAIL_PEOPLE belum diisi</span>';
+      ' onchange="setWho(\''+c.id+'\',\''+esc(n)+'\',this.checked)"> '+esc(n)+'</label>';
+  }).join('') || '<span class="muted" style="font-size:12px">daftar penerima masih kosong &mdash; '+
+                 'isi di <a href="#" onclick="setView(\'set\');return false">Settings</a></span>';
   const note = !c.due ? 'kasih tanggal dulu biar bisa diingatkan'
     : (c.remind==='off' ? 'pengingat dimatikan untuk to-do ini'
-    : (to.length?'':'belum dipilih &rarr; pakai default ('+esc(MAIL.default_to||'tidak ada')+')'));
+    : (to.length?'':'belum dipilih &rarr; pakai default ('+esc(MAIL.eff_to||'belum diatur')+')'));
   return '<label>Pengingat email</label>'+
     '<select onchange="setRemind(\''+c.id+'\',this.value)">'+opts+'</select>'+
     '<div class="whos">'+who+'</div>'+
@@ -677,9 +802,71 @@ function drop(ev,ds){ ev.preventDefault();
   const id=DRAG||(ev.dataTransfer?ev.dataTransfer.getData('text/plain'):'');
   const t=id?tById(id):null; if(t) t.due=ds; DRAG=null; renderBoard(); }
 
+/* ================= SETTINGS =================
+   MAIL holds what the server merged from plan.json + .env. Edits go straight
+   back into it and ride along on the next Simpan, so one save covers
+   everything on every screen. */
+function mset(k,v){ MAIL[k]=v; if(k==='enabled') renderSettings(); }
+function mailPeople(){ return MAIL.people || (MAIL.people=[]); }
+function addPerson(){ mailPeople().push({name:'',email:''}); renderSettings();
+  const els=document.querySelectorAll('#m-people .prow input'); if(els.length) els[els.length-2].focus(); }
+function pset(i,k,v){ mailPeople()[i][k]=v; if(k==='name') renderSettings(); }
+function pdel(i){ mailPeople().splice(i,1); renderSettings(); }
+function toList(){ return (MAIL.default_to||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean); }
+function setDefaultTo(name,on){
+  const cur=(MAIL.default_to||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const i=cur.map(s=>s.toLowerCase()).indexOf(name.toLowerCase());
+  if(on&&i===-1) cur.push(name);
+  if(!on&&i!==-1) cur.splice(i,1);
+  MAIL.default_to=cur.join(','); renderSettings();
+}
+function renderSettings(){
+  const b=document.getElementById('mailstatus');
+  const ready=MAIL.ready&&MAIL.enabled!==false;
+  b.className='banner '+(ready?'ok':'warn');
+  b.innerHTML=ready
+    ? '&#10003; Pengingat aktif &middot; lewat '+esc(MAIL.transport)+' &middot; zona '+esc(MAIL.tz)
+    : '&#9888; Belum jalan: '+esc(MAIL.why||'belum lengkap');
+
+  document.getElementById('m-from').value=MAIL.from_email||'';
+  document.getElementById('m-fromname').value=MAIL.from_name||'';
+  document.getElementById('m-time').value=MAIL.default_time||MAIL.eff_time||'';
+  document.getElementById('m-on').checked=MAIL.enabled!==false;
+
+  const leads=(MAIL.leads||[]), labels=(MAIL.lead_labels||[]);
+  document.getElementById('m-lead').innerHTML=leads.map(function(l,i){
+    return '<option value="'+l+'"'+((MAIL.default_lead||MAIL.eff_lead)===l?' selected':'')+'>'+
+           esc(labels[i]||l)+'</option>'; }).join('');
+
+  document.getElementById('m-people').innerHTML=mailPeople().map(function(p,i){
+    return '<div class="prow">'+
+      '<input placeholder="nama (mis. dian)" value="'+esc(p.name)+'" oninput="pset('+i+',\'name\',this.value)">'+
+      '<input placeholder="email" type="email" value="'+esc(p.email)+'" oninput="pset('+i+',\'email\',this.value)">'+
+      '<button class="btn del" onclick="pdel('+i+')">&#10005;</button></div>'; }).join('')
+    || '<div class="muted sm">belum ada. tambahkan minimal satu orang.</div>';
+
+  const sel=toList();
+  document.getElementById('m-default-to').innerHTML=mailPeople().filter(p=>p.name).map(function(p){
+    const on=sel.indexOf(p.name.toLowerCase())!==-1;
+    return '<label class="who"><input type="checkbox" '+(on?'checked':'')+
+      ' onchange="setDefaultTo(\''+esc(p.name)+'\',this.checked)"> '+esc(p.name)+'</label>';
+  }).join('') || '<span class="muted sm">isi daftar penerima dulu</span>';
+}
+async function mailTest(){
+  const el=document.getElementById('m-testmsg');
+  el.textContent='mengirim...';
+  try{
+    const r=await fetch('/api/mailtest?token='+encodeURIComponent(TOKEN),
+      {method:'POST',headers:{'content-type':'application/json'},
+       body:JSON.stringify({mail:MAIL,to:''})});
+    const j=await r.json();
+    el.textContent=j.message||'selesai';
+  }catch(e){ el.textContent='gagal: '+e; }
+}
+
 /* ================= save ================= */
 async function save(){
-  const body={
+  const body={mail:MAIL,
     entries:DATA.entries.filter(e=>e.item||e.amount||kids(e.id).length),
     tasks:DATA.tasks.filter(t=>(t.title||'').trim()),
     notes:document.getElementById('notes').value };

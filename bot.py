@@ -391,16 +391,25 @@ def tool_task_update(id: str, title: str = "", detail: str = "", status: str = "
     return f"ok, [{t['id']}] '{t['title']}' -> {t['status']}"
 
 
+def mail_conf() -> dict:
+    """Reminder settings: saved in plan.json, with .env as the fallback."""
+    try:
+        return mailer.conf(get_plan().mail())
+    except Exception:  # noqa: BLE001
+        return mailer.conf(None)
+
+
 def _remind_note(t: dict) -> str:
     """One clause describing when (and to whom) a to-do will be mailed about."""
     if t.get("parent"):
         return ""
     if not t.get("due"):
         return " -- belum ada tanggal, jadi belum ada pengingat"
-    lead = t.get("remind") or mailer.REMIND_DEFAULT_LEAD
+    c = mail_conf()
+    lead = t.get("remind") or c["lead"]
     if mailer.parse_lead(lead) is None:
         return " -- pengingat dimatikan"
-    who = mailer.resolve_recipients(t.get("remind_to") or "")
+    who = mailer.resolve_recipients(t.get("remind_to") or "", c)
     if not who:
         return " -- tidak ada penerima email, jadi tidak ada pengingat"
     return f" -- email {mailer.fmt_lead(lead)} ke {', '.join(n for n, _ in who)}"
@@ -408,8 +417,9 @@ def _remind_note(t: dict) -> str:
 
 def tool_reminder_list() -> str:
     """Every reminder still queued, soonest first."""
-    if not mailer.enabled():
-        return f"pengingat email mati: {mailer.why_disabled()}"
+    c = mail_conf()
+    if not mailer.enabled(c):
+        return f"pengingat email mati: {mailer.why_disabled(c)}"
     now = datetime.now(mailer.tz())
     rows = []
     for t, _kids, due, send_at, lead, who in _pending_reminders():
@@ -424,18 +434,19 @@ def tool_reminder_list() -> str:
 
 def tool_email_test(to: str = "") -> str:
     """Send a test email, to check Brevo and the addresses are right."""
-    if not mailer.enabled():
-        return f"tidak bisa kirim: {mailer.why_disabled()}"
-    who = mailer.resolve_recipients(to)
+    c = mail_conf()
+    if not mailer.enabled(c):
+        return f"tidak bisa kirim: {mailer.why_disabled(c)}"
+    who = mailer.resolve_recipients(to, c)
     if not who:
-        known = ", ".join(mailer.people().keys()) or "(MAIL_PEOPLE kosong)"
+        known = ", ".join(c["people"].keys()) or "(daftar penerima di Settings masih kosong)"
         return f"tidak ada penerima yang cocok. yang terdaftar: {known}"
     ok, detail = mailer.send(
         who, "Tes pengingat Wedding Plan",
         "<p>Halo! Ini email tes dari bot rencana nikah. "
         "Kalau kamu baca ini, pengingat otomatis sudah jalan.</p>"
         + (f'<p><a href="{mailer.esc(doc_url())}">Buka rencana</a></p>' if doc_url() else ""),
-        "Email tes dari bot rencana nikah.")
+        "Email tes dari bot rencana nikah.", c)
     names = ", ".join(f"{n} <{e}>" for n, e in who)
     return f"terkirim ke {names}" if ok else f"gagal kirim ke {names}: {detail}"
 
@@ -1308,7 +1319,22 @@ def run_webhook(waha: "Waha") -> int:
                 get_plan().replace_all(payload.get("entries") or [], payload.get("notes"))
                 if isinstance(payload.get("tasks"), list):
                     get_plan().replace_tasks(payload["tasks"])
+                if isinstance(payload.get("mail"), dict):
+                    get_plan().replace_mail(payload["mail"])
                 return self._send(200, json.dumps(get_plan().read(), ensure_ascii=False),
+                                  "application/json; charset=utf-8")
+            if path == "/api/mailtest":
+                if not DOC_TOKEN or (q.get("token") or [""])[0] != DOC_TOKEN:
+                    return self._send(403, "forbidden")
+                try:
+                    payload = json.loads(body or b"{}")
+                except Exception:  # noqa: BLE001
+                    payload = {}
+                # Save first, so the test uses exactly what is on screen.
+                if isinstance(payload.get("mail"), dict):
+                    get_plan().replace_mail(payload["mail"])
+                msg = tool_email_test(str(payload.get("to") or ""))
+                return self._send(200, json.dumps({"message": msg}, ensure_ascii=False),
                                   "application/json; charset=utf-8")
             return self._send(404, "not found")
 
@@ -1383,18 +1409,19 @@ def _pending_reminders() -> list[tuple]:
     """(task, kids, due_at, send_at, lead, recipients) for every armed reminder."""
     data = get_plan().read()
     tasks = data.get("tasks") or []
+    c = mailer.conf(data.get("mail"))
     out = []
     for t in tasks:
         if t.get("parent") or t.get("status") == "done":
             continue
-        due = mailer.due_at(t)
+        due = mailer.due_at(t, c)
         if not due:
             continue
-        lead = t.get("remind") or mailer.REMIND_DEFAULT_LEAD
+        lead = t.get("remind") or c["lead"]
         td = mailer.parse_lead(lead)
         if td is None:
             continue
-        who = mailer.resolve_recipients(t.get("remind_to") or "")
+        who = mailer.resolve_recipients(t.get("remind_to") or "", c)
         if not who:
             continue
         kids = [k for k in tasks if k.get("parent") == t.get("id")]
@@ -1408,7 +1435,8 @@ def _remind_key(send_at, lead: str) -> str:
 
 def reminder_tick() -> int:
     """Send whatever is due now. Returns how many mails went out."""
-    if not mailer.enabled():
+    c = mail_conf()
+    if not mailer.enabled(c):
         return 0
     now = datetime.now(mailer.tz())
     sent = 0
@@ -1422,7 +1450,7 @@ def reminder_tick() -> int:
             get_plan().task_update(t["id"], notified=key)
             continue
         subject, html, text = mailer.reminder_body(t, kids, due, lead, doc_url())
-        ok, detail = mailer.send(who, subject, html, text)
+        ok, detail = mailer.send(who, subject, html, text, c)
         if ok:
             get_plan().task_update(t["id"], notified=key)
             sent += 1
@@ -1436,7 +1464,7 @@ def reminder_tick() -> int:
 
 def reminder_loop() -> None:
     log(f"reminder scheduler on (every {mailer.REMIND_POLL_SECONDS}s, "
-        f"tz {mailer.TIMEZONE}, default {mailer.fmt_lead(mailer.REMIND_DEFAULT_LEAD)})")
+        f"tz {mailer.TIMEZONE}, transport {mailer.transport()})")
     while True:
         try:
             reminder_tick()
@@ -1447,9 +1475,12 @@ def reminder_loop() -> None:
 
 
 def start_reminders() -> None:
-    if not mailer.enabled():
-        log("reminder scheduler off:", mailer.why_disabled())
+    if not (mailer.has_api() or mailer.has_smtp()):
+        log("reminder scheduler off: no BREVO_API_KEY / SMTP_PASSWORD in .env")
         return
+    why = mailer.why_disabled(mail_conf())
+    if why:
+        log(f"reminder scheduler idle ({why}) -- finish it on the Settings screen")
     threading.Thread(target=reminder_loop, name="reminders", daemon=True).start()
 
 

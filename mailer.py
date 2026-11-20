@@ -61,8 +61,8 @@ def tz():
         return timezone.utc
 
 
-def people() -> dict[str, str]:
-    """name -> email, parsed from MAIL_PEOPLE."""
+def env_people() -> dict[str, str]:
+    """name -> email, parsed from MAIL_PEOPLE. Only a seed for first run."""
     out: dict[str, str] = {}
     for part in os.environ.get("MAIL_PEOPLE", "").split(","):
         part = part.strip()
@@ -75,6 +75,37 @@ def people() -> dict[str, str]:
     return out
 
 
+# --------------------------------------------------------------------------
+# Config
+#
+# Secrets (the Brevo key, the SMTP password) come from the environment and
+# never leave the server. Everything a human adjusts -- who is reminded, how
+# far ahead, the sender -- is saved in plan.json and edited on the Settings
+# screen, with the environment only supplying first-run defaults.
+# --------------------------------------------------------------------------
+
+def conf(saved: dict | None = None) -> dict:
+    """Merge the saved settings over the environment defaults."""
+    s = saved if isinstance(saved, dict) else {}
+
+    people = {}
+    for p in (s.get("people") or []):
+        if isinstance(p, dict) and p.get("name") and p.get("email"):
+            people[str(p["name"]).strip().lower()] = str(p["email"]).strip()
+    if not people:
+        people = env_people()
+
+    return {
+        "from_email": (s.get("from_email") or MAIL_FROM_EMAIL).strip(),
+        "from_name": (s.get("from_name") or MAIL_FROM_NAME).strip(),
+        "people": people,
+        "default_to": (s.get("default_to") or MAIL_TO_DEFAULT).strip(),
+        "lead": (s.get("default_lead") or REMIND_DEFAULT_LEAD).strip(),
+        "time": (s.get("default_time") or REMIND_DEFAULT_TIME).strip(),
+        "on": bool(s.get("enabled", True)) and REMIND_ENABLED,
+    }
+
+
 def has_api() -> bool:
     return bool(BREVO_API_KEY)
 
@@ -83,17 +114,21 @@ def has_smtp() -> bool:
     return bool(SMTP_HOST and SMTP_LOGIN and SMTP_PASSWORD)
 
 
-def enabled() -> bool:
-    return bool(REMIND_ENABLED and MAIL_FROM_EMAIL and (has_api() or has_smtp()))
+def enabled(c: dict | None = None) -> bool:
+    c = c or conf()
+    return bool(c["on"] and c["from_email"] and (has_api() or has_smtp()))
 
 
-def why_disabled() -> str:
+def why_disabled(c: dict | None = None) -> str:
+    c = c or conf()
     if not REMIND_ENABLED:
-        return "REMIND_ENABLED is off"
+        return "REMIND_ENABLED is off in .env"
+    if not c["on"]:
+        return "dimatikan di Settings"
     if not (has_api() or has_smtp()):
-        return "no transport: set BREVO_API_KEY, or SMTP_LOGIN + SMTP_PASSWORD"
-    if not MAIL_FROM_EMAIL:
-        return "MAIL_FROM_EMAIL not set"
+        return "belum ada kredensial: isi BREVO_API_KEY atau SMTP_PASSWORD di .env"
+    if not c["from_email"]:
+        return "alamat pengirim belum diisi di Settings"
     return ""
 
 
@@ -101,6 +136,28 @@ def transport() -> str:
     if has_api():
         return "api" + ("+smtp" if has_smtp() else "")
     return "smtp" if has_smtp() else "none"
+
+
+def web_config(saved: dict | None = None) -> dict:
+    """What the Settings screen needs: the saved values plus computed status."""
+    c = conf(saved)
+    s = saved if isinstance(saved, dict) else {}
+    return {
+        "from_email": s.get("from_email", ""),
+        "from_name": s.get("from_name", ""),
+        "people": [{"name": n, "email": e} for n, e in sorted(c["people"].items())],
+        "default_to": s.get("default_to", ""),
+        "default_lead": s.get("default_lead", ""),
+        "default_time": s.get("default_time", ""),
+        "enabled": bool(s.get("enabled", True)),
+        # resolved values, for the hints in the UI
+        "eff_lead": c["lead"], "eff_time": c["time"], "eff_to": c["default_to"],
+        "eff_from": c["from_email"], "eff_from_name": c["from_name"],
+        "leads": [l[0] for l in LEAD_CHOICES], "lead_labels": [l[1] for l in LEAD_CHOICES],
+        "ready": enabled(c), "why": why_disabled(c),
+        "transport": transport(), "has_secret": has_api() or has_smtp(),
+        "tz": TIMEZONE,
+    }
 
 
 # --------------------------------------------------------------- lead times
@@ -112,6 +169,11 @@ _UNITS = {
     "w": "w", "week": "w", "weeks": "w", "minggu": "w",
 }
 _SECONDS = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+# Offered in the Settings screen and in each to-do's reminder dropdown.
+LEAD_CHOICES = [("15m", "15 menit"), ("30m", "30 menit"), ("1h", "1 jam"),
+                ("3h", "3 jam"), ("6h", "6 jam"), ("12h", "12 jam"),
+                ("1d", "1 hari"), ("2d", "2 hari"), ("3d", "3 hari"), ("1w", "1 minggu")]
 
 
 def parse_lead(spec: str) -> timedelta | None:
@@ -144,10 +206,11 @@ def fmt_lead(spec: str) -> str:
 
 # -------------------------------------------------------------- recipients
 
-def resolve_recipients(spec: str) -> list[tuple[str, str]]:
-    """'dian, rahmat' or raw addresses -> [(name, email)]. Unknown names are dropped."""
-    book = people()
-    raw = str(spec or "").strip() or MAIL_TO_DEFAULT
+def resolve_recipients(spec: str, c: dict | None = None) -> list[tuple[str, str]]:
+    """'dian, rahmat' or raw addresses -> [(name, email)]. Unknown names dropped."""
+    c = c or conf()
+    book = c["people"]
+    raw = str(spec or "").strip() or c["default_to"]
     out: list[tuple[str, str]] = []
     seen = set()
     for part in raw.replace(";", ",").split(","):
@@ -166,35 +229,38 @@ def resolve_recipients(spec: str) -> list[tuple[str, str]]:
 
 # ------------------------------------------------------------------ sending
 
-def send(to: list[tuple[str, str]], subject: str, html: str, text: str = "") -> tuple[bool, str]:
+def send(to: list[tuple[str, str]], subject: str, html: str, text: str = "",
+         c: dict | None = None) -> tuple[bool, str]:
     """Send one mail over whichever transport is configured. Never raises.
 
     The HTTPS API is tried first (port 443 is never blocked); SMTP is the
     fallback, and the only path when no API key is set.
     """
-    if not enabled():
-        return False, f"email disabled: {why_disabled()}"
+    c = c or conf()
+    if not enabled(c):
+        return False, f"email disabled: {why_disabled(c)}"
     if not to:
         return False, "no recipients"
     if has_api():
-        ok, detail = _send_api(to, subject, html, text)
+        ok, detail = _send_api(to, subject, html, text, c)
         if ok or not has_smtp():
             return ok, detail
-        ok2, detail2 = _send_smtp(to, subject, html, text)
+        ok2, detail2 = _send_smtp(to, subject, html, text, c)
         return ok2, (f"smtp fallback ok (api said: {detail})" if ok2
                      else f"api: {detail} | smtp: {detail2}")
     return _send_smtp(to, subject, html, text)
 
 
 def _send_smtp(to: list[tuple[str, str]], subject: str, html: str,
-               text: str = "") -> tuple[bool, str]:
+               text: str = "", c: dict | None = None) -> tuple[bool, str]:
     import smtplib
     from email.message import EmailMessage
     from email.utils import formataddr
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = formataddr((MAIL_FROM_NAME, MAIL_FROM_EMAIL))
+    c = c or conf()
+    msg["From"] = formataddr((c["from_name"], c["from_email"]))
     msg["To"] = ", ".join(formataddr((n, e)) for n, e in to)
     msg.set_content(text or "Lihat versi HTML.")
     msg.add_alternative(html, subtype="html")
@@ -209,9 +275,10 @@ def _send_smtp(to: list[tuple[str, str]], subject: str, html: str,
 
 
 def _send_api(to: list[tuple[str, str]], subject: str, html: str,
-              text: str = "") -> tuple[bool, str]:
+              text: str = "", c: dict | None = None) -> tuple[bool, str]:
+    c = c or conf()
     body = {
-        "sender": {"email": MAIL_FROM_EMAIL, "name": MAIL_FROM_NAME},
+        "sender": {"email": c["from_email"], "name": c["from_name"]},
         "to": [{"email": e, "name": n} for n, e in to],
         "subject": subject,
         "htmlContent": html,
@@ -238,12 +305,12 @@ def _send_api(to: list[tuple[str, str]], subject: str, html: str,
 
 # -------------------------------------------------------------- due + email
 
-def due_at(task: dict) -> datetime | None:
+def due_at(task: dict, c: dict | None = None) -> datetime | None:
     """When a to-do is due, as an aware datetime, or None if it has no date."""
     d = str(task.get("due") or "").strip()
     if not d:
         return None
-    t = str(task.get("time") or "").strip() or REMIND_DEFAULT_TIME
+    t = str(task.get("time") or "").strip() or (c or conf())["time"]
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H.%M"):
         try:
             return datetime.strptime(f"{d} {t}", fmt).replace(tzinfo=tz())

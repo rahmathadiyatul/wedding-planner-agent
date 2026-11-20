@@ -83,6 +83,7 @@ class PlanStore:
         data.setdefault("entries", [])
         data.setdefault("notes", "")
         data.setdefault("tasks", [])
+        data["mail"] = _clean_mail(data.get("mail"))
         return data
 
     def _write_locked(self, data: dict) -> None:
@@ -96,6 +97,18 @@ class PlanStore:
     def read(self) -> dict:
         with self._lock:
             return self._read_locked()
+
+    def replace_mail(self, cfg: dict) -> dict:
+        """Save the reminder settings edited on the Settings screen."""
+        with self._lock:
+            data = self._read_locked()
+            data["mail"] = _clean_mail(cfg)
+            self._write_locked(data)
+            return data["mail"]
+
+    def mail(self) -> dict:
+        with self._lock:
+            return self._read_locked()["mail"]
 
     def replace_all(self, entries: list, notes: str | None = None) -> None:
         """Full save from the web page."""
@@ -327,12 +340,12 @@ class PlanStore:
 
     def summary(self) -> dict:
         all_entries = self.read()["entries"]
-        # A parent's amount is the sum of its children, so counting both would
-        # double-count: total over leaves only.
-        entries = leaves(all_entries)
+        # Walk only the top level and let amount_of fold each sub-tree in, so
+        # nothing is counted twice and no branch is lost.
+        tops = [e for e in all_entries if not e.get("parent")]
 
         def tot(kind, status=None):
-            return sum(int(e.get("amount") or 0) for e in entries
+            return sum(amount_of(all_entries, e) for e in tops
                        if e.get("kind") == kind and (status is None or e.get("status") == status))
 
         inc_a, inc_e = tot("income", "actual"), tot("income", "expected")
@@ -343,6 +356,7 @@ class PlanStore:
             "cash_on_hand": inc_a - exp_a,
             "projected_balance": (inc_a + inc_e) - (exp_a + exp_e),
             "count": len(all_entries),
+            "blank": sum(1 for e in leaves(all_entries) if not int(e.get("amount") or 0)),
         }
 
     def summary_text(self) -> str:
@@ -356,6 +370,8 @@ class PlanStore:
             f"Total pengeluaran (proyeksi): {rupiah(s['expense_total'])}\n"
             f"Uang di tangan (diterima - dibayar): {rupiah(s['cash_on_hand'])}\n"
             f"Saldo proyeksi: {rupiah(s['projected_balance'])}"
+            + (f"\n({s['blank']} item belum diisi nominalnya, jadi belum ikut hitungan)"
+               if s.get("blank") else "")
         )
 
     def entries_text(self, kind: str = "", status: str = "") -> str:
@@ -408,6 +424,46 @@ def _clean(e: dict) -> dict:
     }
 
 
+MAIL_DEFAULTS = {
+    "from_email": "", "from_name": "Wedding Planner",
+    "people": [], "default_to": "", "default_lead": "1d",
+    "default_time": "09:00", "enabled": True,
+}
+
+
+def _clean_mail(m) -> dict:
+    """Reminder settings, as edited on the Settings screen.
+
+    Only non-secret settings live here -- the Brevo API key and SMTP password
+    stay in the environment, since this file is served to anyone holding the
+    doc token.
+    """
+    m = m if isinstance(m, dict) else {}
+    people = []
+    seen = set()
+    for p in (m.get("people") or []):
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name") or "").strip()
+        email = str(p.get("email") or "").strip()
+        if not name or "@" not in email or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        people.append({"name": name, "email": email})
+    to = m.get("default_to")
+    if isinstance(to, list):
+        to = ",".join(str(x) for x in to)
+    return {
+        "from_email": str(m.get("from_email") or "").strip(),
+        "from_name": str(m.get("from_name") or MAIL_DEFAULTS["from_name"]).strip(),
+        "people": people,
+        "default_to": str(to or "").strip(),
+        "default_lead": str(m.get("default_lead") or "").strip(),
+        "default_time": str(m.get("default_time") or "").strip(),
+        "enabled": bool(m.get("enabled", True)),
+    }
+
+
 def _clean_task(t: dict) -> dict:
     status = str(t.get("status") or "todo").lower()
     return {
@@ -456,10 +512,19 @@ def leaves(entries: list[dict]) -> list[dict]:
 
 
 def amount_of(entries: list[dict], e: dict) -> int:
-    """An entry's effective amount: the sum of its sub-items, or its own value."""
+    """An entry's effective amount.
+
+    Sub-items win when at least one of them carries a number -- that is the
+    breakdown replacing the estimate. But a parent whose sub-items are all
+    still blank keeps its own figure, otherwise the moment you jot down the
+    first placeholder line the parent silently drops to zero and every total
+    on the page is understated.
+    """
     kids = children_of(entries, e.get("id", ""))
     if kids:
-        return sum(amount_of(entries, k) for k in kids)
+        total = sum(amount_of(entries, k) for k in kids)
+        if total:
+            return total
     return int(e.get("amount") or 0)
 
 
@@ -508,18 +573,12 @@ def _now() -> str:
 
 def render_page(token: str, store: PlanStore) -> str:
     import page
+    data = store.read()
     try:
         import mailer
-        cfg = {"people": sorted(mailer.people().keys()),
-               "default_lead": mailer.REMIND_DEFAULT_LEAD,
-               "default_to": mailer.MAIL_TO_DEFAULT,
-               "default_time": mailer.REMIND_DEFAULT_TIME,
-               "enabled": mailer.enabled(),
-               "why": mailer.why_disabled()}
-    except Exception:  # noqa: BLE001
-        cfg = {"people": [], "default_lead": "1d", "default_to": "",
-               "default_time": "09:00", "enabled": False, "why": "mailer unavailable"}
-    data = store.read()
+        cfg = mailer.web_config(data["mail"])
+    except Exception as e:  # noqa: BLE001
+        cfg = dict(data["mail"], enabled=False, why=f"mailer unavailable: {e!r}",
+                   transport="none", has_secret=False)
     return page.render(token, store.title, data["entries"],
                        data.get("notes", ""), data.get("tasks", []), cfg)
-
