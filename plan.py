@@ -220,14 +220,15 @@ class PlanStore:
 
     def task_add(self, title: str, detail: str = "", status: str = "todo",
                  category: str = "", due: str = "", parent: str = "",
-                 time: str = "", remind: str = "", remind_to: str = "") -> dict:
+                 time: str = "", remind: str = "", remind_to: str = "",
+                 due_end: str = "") -> dict:
         with self._lock:
             data = self._read_locked()
             pid = _resolve_task(data["tasks"], parent)
             t = _clean_task({"id": uuid.uuid4().hex[:8], "title": title, "detail": detail,
                              "status": status, "category": category, "due": due,
                              "time": time, "remind": remind, "remind_to": remind_to,
-                             "parent": pid})
+                             "due_end": due_end, "parent": pid})
             data["tasks"].append(t)
             self._write_locked(data)
         return t
@@ -311,6 +312,8 @@ class PlanStore:
             kids = [k for k in tasks if k.get("parent") == c["id"]]
             done = sum(1 for k in kids if k.get("status") == "done")
             bits = [f"[{c['id']}] {c['title']}", f"<{TASK_LABELS.get(c.get('status'), '?')}>"]
+            if c.get("due_end") and c.get("due_end") != due:
+                bits.append(f"s/d {c['due_end']} (tiap hari)")
             if kids:
                 bits.append(f"({done}/{len(kids)})")
             if c.get("category"):
@@ -473,6 +476,9 @@ def _clean_task(t: dict) -> dict:
         "status": status if status in TASK_STATES else "todo",
         "category": str(t.get("category") or "").strip(),
         "due": str(t.get("due") or "").strip(),
+        # A to-do can span days. With due_end set, `due` is the first day and
+        # the reminder repeats daily at `time` until due_end.
+        "due_end": str(t.get("due_end") or "").strip(),
         "time": str(t.get("time") or "").strip(),
         # reminder: "" = use the configured default lead, "off" = never.
         "remind": str(t.get("remind") or "").strip(),

@@ -351,11 +351,13 @@ def tool_task_board(status: str = "") -> str:
 
 def tool_task_add(title: str, detail: str = "", status: str = "todo",
                   category: str = "", due: str = "", parent: str = "",
-                  time: str = "", remind: str = "", remind_to: str = "") -> str:
+                  time: str = "", remind: str = "", remind_to: str = "",
+                  due_end: str = "") -> str:
     """Add a to-do card (or a checklist item when `parent` is given)."""
     t = get_plan().task_add(title=title, detail=detail, status=status,
                             category=category, due=due, parent=parent,
-                            time=time, remind=remind, remind_to=remind_to)
+                            time=time, remind=remind, remind_to=remind_to,
+                            due_end=due_end)
     where = f" di bawah '{parent}'" if parent else ""
     return f"ok, to-do '{t['title']}'{where} dibuat (id {t['id']}){_remind_note(t)}"
 
@@ -380,12 +382,13 @@ def _resolve_task_exists(ref: str) -> bool:
 
 def tool_task_update(id: str, title: str = "", detail: str = "", status: str = "",
                      category: str = "", due: str = "", time: str = "",
-                     remind: str = "", remind_to: str = "") -> str:
+                     remind: str = "", remind_to: str = "", due_end: str = "") -> str:
     """Update a to-do (id or title). Use status to move it between columns."""
     t = get_plan().task_update(id, title=title or None, detail=detail or None,
                                status=status or None, category=category or None,
                                due=due or None, time=time or None,
-                               remind=remind or None, remind_to=remind_to or None)
+                               remind=remind or None, remind_to=remind_to or None,
+                               due_end=due_end or None)
     if not t:
         return f"error: no to-do matching '{id}' (pakai task_board untuk lihat id)"
     return f"ok, [{t['id']}] '{t['title']}' -> {t['status']}"
@@ -406,13 +409,20 @@ def _remind_note(t: dict) -> str:
     if not t.get("due"):
         return " -- belum ada tanggal, jadi belum ada pengingat"
     c = mail_conf()
-    lead = t.get("remind") or c["lead"]
-    if mailer.parse_lead(lead) is None:
-        return " -- pengingat dimatikan"
     who = mailer.resolve_recipients(t.get("remind_to") or "", c)
     if not who:
         return " -- tidak ada penerima email, jadi tidak ada pengingat"
-    return f" -- email {mailer.fmt_lead(lead)} ke {', '.join(n for n, _ in who)}"
+    names = ", ".join(n for n, _ in who)
+    end = mailer.end_at(t, c)
+    if end:
+        occ = mailer.occurrences(t, c)
+        when = (t.get("time") or c["time"])
+        return (f" -- email tiap hari jam {when} sampai {end:%Y-%m-%d} "
+                f"({len(occ)}x) ke {names}")
+    lead = t.get("remind") or c["lead"]
+    if mailer.parse_lead(lead) is None:
+        return " -- pengingat dimatikan"
+    return f" -- email {mailer.fmt_lead(lead)} ke {names}"
 
 
 def tool_reminder_list() -> str:
@@ -422,11 +432,21 @@ def tool_reminder_list() -> str:
         return f"pengingat email mati: {mailer.why_disabled(c)}"
     now = datetime.now(mailer.tz())
     rows = []
-    for t, _kids, due, send_at, lead, who in _pending_reminders():
-        rows.append(f"{send_at:%Y-%m-%d %H:%M} -> {t['title']} "
-                    f"(acara {due:%Y-%m-%d %H:%M}, {mailer.fmt_lead(lead)}, "
-                    f"ke {', '.join(n for n, _ in who)})"
-                    + ("  [SUDAH LEWAT]" if send_at < now else ""))
+    seen = set()
+    for t, _kids, start, when, _key, i, n, lead, who in _pending_reminders():
+        if when < now:                      # already sent, or missed
+            continue
+        if n > 1 and t["id"] in seen:       # one line per daily run
+            continue
+        seen.add(t["id"])
+        names = ", ".join(x for x, _ in who)
+        if n > 1:
+            end = mailer.end_at(t, c)
+            rows.append(f"{when:%Y-%m-%d %H:%M} -> {t['title']} (tiap hari s/d "
+                        f"{end:%Y-%m-%d}, sisa {n - i + 1}x, ke {names})")
+        else:
+            rows.append(f"{when:%Y-%m-%d %H:%M} -> {t['title']} "
+                        f"(acara {start:%Y-%m-%d %H:%M}, {mailer.fmt_lead(lead)}, ke {names})")
     if not rows:
         return "belum ada pengingat terjadwal (to-do butuh tanggal + penerima)."
     return "\n".join(sorted(rows))
@@ -680,9 +700,15 @@ TOOL_SCHEMA = [
                     "due": {"type": "string", "description": "YYYY-MM-DD -- the day it lands on "
                                              "in the calendar. Always set it when the "
                                              "user names a day or deadline."},
+                    "due_end": {"type": "string", "description": "YYYY-MM-DD. Set this for a "
+                                                                 "to-do that runs over several "
+                                                                 "days ('cari venue 1-7 Desember'). "
+                                                                 "The reminder then repeats EVERY "
+                                                                 "DAY at `time` until this date."},
                     "time": {"type": "string", "description": "HH:MM, 24h. Optional; without it "
                                                               "the to-do counts as due at the "
-                                                              "configured default hour."},
+                                                              "configured default hour. For a "
+                                                              "range this is the daily send hour."},
                     "remind": {"type": "string", "description": "How far ahead to email: 15m, 2h, "
                                                                 "1d, 1w. 'off' to never remind. "
                                                                 "Leave empty for the default."},
@@ -1406,7 +1432,11 @@ refresh(); setInterval(refresh, 15000); poll();
 # --------------------------------------------------------------------------
 
 def _pending_reminders() -> list[tuple]:
-    """(task, kids, due_at, send_at, lead, recipients) for every armed reminder."""
+    """(task, kids, start, when, key, index, total, lead, who) per queued send.
+
+    A one-day to-do yields a single row; a to-do with an end date yields one
+    row per day in the range, so a 1-7 December run is seven reminders.
+    """
     data = get_plan().read()
     tasks = data.get("tasks") or []
     c = mailer.conf(data.get("mail"))
@@ -1414,23 +1444,18 @@ def _pending_reminders() -> list[tuple]:
     for t in tasks:
         if t.get("parent") or t.get("status") == "done":
             continue
-        due = mailer.due_at(t, c)
-        if not due:
-            continue
-        lead = t.get("remind") or c["lead"]
-        td = mailer.parse_lead(lead)
-        if td is None:
+        occ = mailer.occurrences(t, c)
+        if not occ:
             continue
         who = mailer.resolve_recipients(t.get("remind_to") or "", c)
         if not who:
             continue
+        start = mailer.due_at(t, c)
         kids = [k for k in tasks if k.get("parent") == t.get("id")]
-        out.append((t, kids, due, due - td, lead, who))
+        lead = t.get("remind") or c["lead"]
+        for when, key, i, n in occ:
+            out.append((t, kids, start, when, key, i, n, lead, who))
     return out
-
-
-def _remind_key(send_at, lead: str) -> str:
-    return f"{send_at:%Y-%m-%dT%H:%M}|{lead}"
 
 
 def reminder_tick() -> int:
@@ -1440,21 +1465,31 @@ def reminder_tick() -> int:
         return 0
     now = datetime.now(mailer.tz())
     sent = 0
-    for t, kids, due, send_at, lead, who in _pending_reminders():
-        key = _remind_key(send_at, lead)
-        if t.get("notified") == key or now < send_at:
+    # Only the most recent past occurrence of each to-do matters: if the bot
+    # was down for three days of a daily run, send today's and let the rest go.
+    latest: dict[str, tuple] = {}
+    for row in _pending_reminders():
+        when = row[3]
+        if when > now:
             continue
-        # Too late to be useful (added after the fact, or the bot was down):
-        # record it as handled so it never fires out of the blue later.
-        if now > due + timedelta(hours=1):
+        tid = row[0]["id"]
+        if tid not in latest or when > latest[tid][3]:
+            latest[tid] = row
+    for t, kids, start, when, key, i, n, lead, who in latest.values():
+        if t.get("notified") == key:
+            continue
+        # Too stale to be useful: record it as handled so it never fires late.
+        grace = timedelta(hours=6) if n > 1 else timedelta(hours=1)
+        if now > (when if n > 1 else start) + grace:
             get_plan().task_update(t["id"], notified=key)
             continue
-        subject, html, text = mailer.reminder_body(t, kids, due, lead, doc_url())
+        subject, html, text = mailer.reminder_body(t, kids, start, lead, doc_url(), i, n)
         ok, detail = mailer.send(who, subject, html, text, c)
         if ok:
             get_plan().task_update(t["id"], notified=key)
             sent += 1
-            log(f"reminder sent: '{t['title']}' -> {', '.join(e for _, e in who)}")
+            log(f"reminder sent: '{t['title']}' ({i}/{n}) -> "
+                f"{', '.join(e for _, e in who)}")
         else:
             log(f"reminder FAILED: '{t['title']}': {detail}")
             obs.error("reminder-send", RuntimeError(detail),

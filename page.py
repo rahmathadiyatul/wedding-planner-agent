@@ -171,6 +171,9 @@ _PAGE = r"""<!doctype html>
   .pill .pt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .pill .pc{font-size:10px;color:var(--muted);flex:0 0 auto}
   .pill.done .pt{text-decoration:line-through;color:var(--muted)}
+  .pill.run{background:#141c2b}
+  .pill.cont{opacity:.72}
+  .pill.cont .pt{font-weight:400}
   .cal.week .day{min-height:300px}
   .more{font-size:11px;color:var(--muted);background:transparent;border:0;cursor:pointer;text-align:left;padding:1px 2px}
   .nodate{margin-top:16px}
@@ -611,7 +614,12 @@ function matches(c){
   return hit(c)||tKids(c.id).some(hit);
 }
 const topTasks = () => DATA.tasks.filter(t=>!t.parent && matches(t));
-const tasksOn  = ds => topTasks().filter(t=>(t.due||'')===ds);
+/* A to-do with an end date occupies every day from due to due_end. */
+const isRange = t => !!(t.due && t.due_end && t.due_end > t.due);
+const rangeDays = t => isRange(t)
+  ? Math.round((new Date(t.due_end+'T00:00') - new Date(t.due+'T00:00'))/86400000)+1 : 1;
+const spans = (t,ds) => isRange(t) ? (ds>=t.due && ds<=t.due_end) : (t.due||'')===ds;
+const tasksOn  = ds => topTasks().filter(t=>spans(t,ds));
 
 function updateKanCount(){
   const open=DATA.tasks.filter(t=>!t.parent&&t.status!=='done').length;
@@ -627,16 +635,20 @@ function today(){ CUR=new Date(); renderBoard(); }
 /* true when the scheduler would mail about this to-do */
 function armed(t){
   if(!MAIL.ready || !t.due || t.status==='done') return false;
-  if((t.remind||'')==='off') return false;
+  if(!isRange(t) && (t.remind||'')==='off') return false;
   return !!((t.remind_to||'').trim() || (MAIL.eff_to||'').trim());
 }
-function pillHtml(t){
+function pillHtml(t,ds){
   const st=KST[t.status]||KST.todo, ks=tKids(t.id), done=ks.filter(k=>k.status==='done').length;
-  return '<button class="pill'+(t.status==='done'?' done':'')+'" draggable="true"'+
+  const run=isRange(t), cont=run&&ds&&ds!==t.due;
+  const day=run&&ds?Math.round((new Date(ds+'T00:00')-new Date(t.due+'T00:00'))/86400000)+1:0;
+  return '<button class="pill'+(t.status==='done'?' done':'')+(run?' run':'')+
+    (cont?' cont':'')+'" draggable="'+(cont?'false':'true')+'"'+
     ' style="border-left-color:'+st[1]+'" title="'+esc(t.title)+' - '+st[0]+'"'+
     ' ondragstart="dstart(event,\'' + t.id + '\')" ondragend="dend(event)"'+
     ' onclick="openTask(\'' + t.id + '\')">'+
     '<span class="pt">'+esc(t.title||'(tanpa judul)')+'</span>'+
+    (run&&day?'<span class="pc">'+day+'/'+rangeDays(t)+'</span>':'')+
     (armed(t)?'<span class="pc" title="ada pengingat email">&#9993;</span>':'')+
     (ks.length?'<span class="pc">'+done+'/'+ks.length+'</span>':'')+'</button>';
 }
@@ -649,7 +661,7 @@ function dayCell(d, outside){
     ' ondrop="drop(event,\'' + ds + '\')">'+
     '<div class="dn">'+d.getDate()+'</div>'+
     '<button class="plus" title="tambah to-do" onclick="addTask(\'' + ds + '\')">+</button>'+
-    shown.map(pillHtml).join('')+
+    shown.map(function(t){return pillHtml(t,ds);}).join('')+
     (rest>0?'<button class="more" onclick="EXPDAY[\'' + ds + '\']=1;renderBoard()">+'+rest+' lagi</button>':'')+
     '</div>';
 }
@@ -713,13 +725,19 @@ function renderDrw(){
     '<label>Judul</label>'+
     '<input value="'+esc(c.title)+'" placeholder="mis. Cari venue" oninput="tupd(\'' + c.id + '\',\'title\',this.value)">'+
     '<label>Status</label><div class="stsel">'+sts+'</div>'+
-    '<label>Tanggal &amp; jam</label>'+
+    '<label>Tanggal</label>'+
     '<div class="trow" style="margin:0">'+
-      '<input style="flex:2;min-width:140px" type="date" value="'+esc(c.due)+'" '+
-        'onchange="setDue(\'' + c.id + '\',this.value)">'+
-      '<input style="flex:1;min-width:96px" type="time" value="'+esc(c.time)+'" '+
-        'onchange="setTime(\'' + c.id + '\',this.value)" title="kosong = jam '+esc(MAIL.default_time)+'">'+
+      '<input style="flex:1;min-width:130px" type="date" value="'+esc(c.due)+'" '+
+        'onchange="setDue(\'' + c.id + '\',this.value)" title="mulai">'+
+      '<span class="muted" style="align-self:center;font-size:12px">s/d</span>'+
+      '<input style="flex:1;min-width:130px" type="date" value="'+esc(c.due_end||'')+'" '+
+        'onchange="setEnd(\'' + c.id + '\',this.value)" title="kosong = satu hari saja">'+
     '</div>'+
+    '<div class="muted sm">isi tanggal kedua kalau to-do-nya berjalan beberapa hari '+
+      '&mdash; pengingatnya dikirim tiap hari</div>'+
+    '<label>Jam</label>'+
+    '<input type="time" value="'+esc(c.time)+'" oninput="setTime(\'' + c.id + '\',this.value)" '+
+      'title="kosong = jam '+esc(MAIL.eff_time||'09:00')+'">'+
     remindHtml(c)+
     '<label>Kategori</label>'+
     '<input value="'+esc(c.category)+'" placeholder="mis. akad" oninput="tupd(\'' + c.id + '\',\'category\',this.value)">'+
@@ -762,6 +780,15 @@ function remindHtml(c){
       ' onchange="setWho(\''+c.id+'\',\''+esc(n)+'\',this.checked)"> '+esc(n)+'</label>';
   }).join('') || '<span class="muted" style="font-size:12px">daftar penerima masih kosong &mdash; '+
                  'isi di <a href="#" onclick="setView(\'set\');return false">Settings</a></span>';
+  if(isRange(c)){
+    const n=rangeDays(c);
+    return '<label>Pengingat email</label>'+
+      '<div class="banner ok" style="font-size:12px">&#9993; Tiap hari jam '+
+        esc(c.time||MAIL.eff_time||'09:00')+', '+n+' hari ('+esc(c.due)+' &rarr; '+esc(c.due_end)+')</div>'+
+      '<div class="whos">'+who+'</div>'+
+      (to.length?'':'<div class="muted sm">belum dipilih &rarr; pakai default ('+
+        esc(MAIL.eff_to||'belum diatur')+')</div>');
+  }
   const note = !c.due ? 'kasih tanggal dulu biar bisa diingatkan'
     : (c.remind==='off' ? 'pengingat dimatikan untuk to-do ini'
     : (to.length?'':'belum dipilih &rarr; pakai default ('+esc(MAIL.eff_to||'belum diatur')+')'));
@@ -780,7 +807,8 @@ function setWho(id,name,on){
   t.remind_to=cur.join(','); renderDrw();
 }
 function setStatus(id,v){ tupd(id,'status',v); renderDrw(); renderBoard(); }
-function setDue(id,v){ tupd(id,'due',v); renderBoard(); }
+function setDue(id,v){ tupd(id,'due',v); renderDrw(); renderBoard(); }
+function setEnd(id,v){ tupd(id,'due_end',v); renderDrw(); renderBoard(); }
 function tgl(id,on){ const t=tById(id); if(!t) return; t.status=on?'done':'todo'; renderDrw(); renderBoard(); }
 function addTask(due){ const id=tmp();
   DATA.tasks.push({id:id,title:'',detail:'',status:'todo',category:'',due:due||'',parent:''});
@@ -800,7 +828,15 @@ function dover(ev,ds){ ev.preventDefault(); const c=document.getElementById('d-'
 function dleave(ds){ const c=document.getElementById('d-'+ds); if(c)c.classList.remove('over'); }
 function drop(ev,ds){ ev.preventDefault();
   const id=DRAG||(ev.dataTransfer?ev.dataTransfer.getData('text/plain'):'');
-  const t=id?tById(id):null; if(t) t.due=ds; DRAG=null; renderBoard(); }
+  const t=id?tById(id):null;
+  if(t){
+    if(isRange(t)){                       /* move the whole run, keep its length */
+      const shift=Math.round((new Date(ds+'T00:00')-new Date(t.due+'T00:00'))/86400000);
+      const e=new Date(t.due_end+'T00:00'); e.setDate(e.getDate()+shift);
+      t.due=ds; t.due_end=iso(e);
+    } else t.due=ds;
+  }
+  DRAG=null; renderBoard(); }
 
 /* ================= SETTINGS =================
    MAIL holds what the server merged from plan.json + .env. Edits go straight

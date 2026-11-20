@@ -305,21 +305,69 @@ def _send_api(to: list[tuple[str, str]], subject: str, html: str,
 
 # -------------------------------------------------------------- due + email
 
-def due_at(task: dict, c: dict | None = None) -> datetime | None:
-    """When a to-do is due, as an aware datetime, or None if it has no date."""
-    d = str(task.get("due") or "").strip()
-    if not d:
+def _at(day: str, hhmm: str, c: dict) -> datetime | None:
+    day = str(day or "").strip()
+    if not day:
         return None
-    t = str(task.get("time") or "").strip() or (c or conf())["time"]
+    t = str(hhmm or "").strip() or c["time"]
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H.%M"):
         try:
-            return datetime.strptime(f"{d} {t}", fmt).replace(tzinfo=tz())
+            return datetime.strptime(f"{day} {t}", fmt).replace(tzinfo=tz())
         except ValueError:
             continue
     try:
-        return datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=tz())
+        return datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=tz())
     except ValueError:
         return None
+
+
+def due_at(task: dict, c: dict | None = None) -> datetime | None:
+    """When a to-do starts, as an aware datetime, or None if it has no date."""
+    return _at(task.get("due"), task.get("time"), c or conf())
+
+
+def end_at(task: dict, c: dict | None = None) -> datetime | None:
+    """The last day of a multi-day to-do, or None when it sits on one day."""
+    c = c or conf()
+    start = due_at(task, c)
+    end = _at(task.get("due_end"), task.get("time"), c)
+    if not start or not end or end <= start:
+        return None
+    return end
+
+
+MAX_OCCURRENCES = 400          # a sanity cap on a mistyped range
+
+
+def occurrences(task: dict, c: dict | None = None) -> list[tuple[datetime, str, int, int]]:
+    """Every moment this to-do should be mailed about: (when, key, index, total).
+
+    One date  -> a single reminder, `lead` ahead of it.
+    A range   -> one reminder per day at the chosen hour, start to end. The
+                 lead does not apply: "remind me daily at 9" is the point of
+                 giving a range, and an extra offset would only blur it.
+
+    `key` is what gets recorded in the task's `notified` field, so each day
+    fires exactly once and a restart never repeats one.
+    """
+    c = c or conf()
+    start = due_at(task, c)
+    if not start:
+        return []
+    end = end_at(task, c)
+    if end:
+        out, cur, i = [], start, 0
+        while cur <= end and i < MAX_OCCURRENCES:
+            i += 1
+            out.append((cur, f"{cur:%Y-%m-%d}|daily", i, 0))
+            cur += timedelta(days=1)
+        return [(w, k, n, len(out)) for w, k, n, _ in out]
+    lead = task.get("remind") or c["lead"]
+    td = parse_lead(lead)
+    if td is None:
+        return []
+    send_at = start - td
+    return [(send_at, f"{send_at:%Y-%m-%dT%H:%M}|{lead}", 1, 1)]
 
 
 def esc(s) -> str:
@@ -332,12 +380,17 @@ _STATUS = {"todo": ("Rencana", "#6b7280"), "doing": ("Proses", "#2f6df6"),
 
 
 def reminder_body(task: dict, kids: list[dict], when: datetime, lead: str,
-                  doc_link: str = "") -> tuple[str, str, str]:
+                  doc_link: str = "", index: int = 1, total: int = 1) -> tuple[str, str, str]:
     """(subject, html, text) for one to-do's reminder."""
     title = task.get("title") or "(tanpa judul)"
     label, colour = _STATUS.get(task.get("status") or "todo", _STATUS["todo"])
     stamp = when.strftime("%A, %d %B %Y, %H:%M")
-    subject = f"Pengingat: {title} ({fmt_lead(lead)})"
+    if total > 1:
+        when_label = f"Hari ke-{index} dari {total}"
+        subject = f"Pengingat harian: {title} (hari {index}/{total})"
+    else:
+        when_label = f"Pengingat {fmt_lead(lead)}"
+        subject = f"Pengingat: {title} ({fmt_lead(lead)})"
 
     rows = ""
     for k in kids:
@@ -355,7 +408,7 @@ def reminder_body(task: dict, kids: list[dict], when: datetime, lead: str,
             if doc_link else "")
 
     html = f"""<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px">
-  <p style="color:#777;font-size:13px;margin:0 0 4px">Pengingat {esc(fmt_lead(lead))}</p>
+  <p style="color:#777;font-size:13px;margin:0 0 4px">{esc(when_label)}</p>
   <h2 style="margin:0 0 6px;font-size:19px;color:#111">{esc(title)}</h2>
   <p style="margin:4px 0 10px">
     <span style="background:{colour};color:#fff;border-radius:999px;padding:2px 9px;font-size:12px">{label}</span>
@@ -365,7 +418,7 @@ def reminder_body(task: dict, kids: list[dict], when: datetime, lead: str,
   {note}{checklist}{link}
 </div>"""
 
-    lines = [f"Pengingat {fmt_lead(lead)}", "", title, f"{label} - {stamp}"]
+    lines = [when_label, "", title, f"{label} - {stamp}"]
     if task.get("detail"):
         lines += ["", str(task["detail"])]
     for k in kids:
