@@ -182,6 +182,21 @@ _PAGE = r"""<!doctype html>
   .nodate .list{display:flex;flex-wrap:wrap;gap:8px}
   .nodate .pill{width:auto;max-width:280px}
 
+  /* hover tooltip -- the pills truncate, so this is where the full text lives */
+  .tip{position:fixed;z-index:60;max-width:300px;background:#0b0d11;color:var(--fg);
+       border:1px solid var(--line);border-radius:10px;padding:9px 11px;font-size:12px;
+       line-height:1.45;box-shadow:0 10px 28px rgba(0,0,0,.55);pointer-events:none;
+       opacity:0;transform:translateY(-3px);transition:opacity .12s,transform .12s;
+       display:none}
+  .tip.on{display:block;opacity:1;transform:none}
+  .tip .tth{font-weight:700;font-size:13px;margin-bottom:5px;white-space:normal;
+            word-break:break-word}
+  .tip .ttr{display:flex;gap:6px;align-items:center;color:var(--muted);margin-top:3px}
+  .tip .sdot{width:7px;height:7px;border-radius:50%;flex:0 0 7px}
+  .tip ul{margin:6px 0 0;padding-left:16px}
+  .tip li{margin:2px 0;color:var(--muted)}
+  .tip li.d{text-decoration:line-through}
+
   /* detail drawer */
   .ov{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;display:none}
   .ov.on{display:block}
@@ -405,6 +420,7 @@ _PAGE = r"""<!doctype html>
     </div>
   </main>
 </div>
+<div class="tip" id="tip" aria-hidden="true"></div>
 <div class="ov" id="ov" onclick="closeDrw()"></div>
 <div class="drw" id="drw"></div>
 
@@ -646,7 +662,8 @@ function pillHtml(t,ds){
   const day=run&&ds?Math.round((new Date(ds+'T00:00')-new Date(t.due+'T00:00'))/86400000)+1:0;
   return '<button class="pill'+(t.status==='done'?' done':'')+(run?' run':'')+
     (cont?' cont':'')+'" draggable="'+(cont?'false':'true')+'"'+
-    ' style="border-left-color:'+st[1]+'" title="'+esc(t.title)+' - '+st[0]+'"'+
+    ' style="border-left-color:'+st[1]+'"'+
+    ' onmouseenter="tipShow(event,\'' + t.id + '\')" onmouseleave="tipHide()"'+
     ' ondragstart="dstart(event,\'' + t.id + '\')" ondragend="dend(event)"'+
     ' onclick="openTask(\'' + t.id + '\')">'+
     '<span class="pt">'+esc(t.title||'(tanpa judul)')+'</span>'+
@@ -699,8 +716,58 @@ function renderBoard(){
   updateKanCount();
 }
 
+/* ---- hover tooltip ---- */
+let TIPT=null;
+function tipShow(ev,id){
+  const t=tById(id); if(!t) return;
+  clearTimeout(TIPT);
+  const el=document.getElementById('tip');
+  const st=KST[t.status]||KST.todo, ks=tKids(t.id);
+  const done=ks.filter(k=>k.status==='done').length;
+  let when='';
+  if(isRange(t)) when=fmtDay(t.due)+' &rarr; '+fmtDay(t.due_end)+' &middot; '+rangeDays(t)+' hari';
+  else if(t.due) when=fmtDay(t.due);
+  const rows=[];
+  if(when) rows.push('<div class="ttr">&#128197; '+when+(t.time?', jam '+esc(t.time):'')+'</div>');
+  if(t.category) rows.push('<div class="ttr">&#127991; #'+esc(t.category)+'</div>');
+  if(armed(t)) rows.push('<div class="ttr">&#9993; '+esc(remindSummary(t))+'</div>');
+  if(ks.length) rows.push('<div class="ttr">&#9745; '+done+'/'+ks.length+' selesai</div>');
+  el.innerHTML='<div class="tth">'+esc(t.title||'(tanpa judul)')+'</div>'+
+    '<div class="ttr"><span class="sdot" style="background:'+st[1]+'"></span>'+st[0]+'</div>'+
+    rows.join('')+
+    (t.detail?'<div class="ttr" style="white-space:normal">'+esc(t.detail.slice(0,160))+
+      (t.detail.length>160?'...':'')+'</div>':'')+
+    (ks.length?'<ul>'+ks.slice(0,5).map(function(k){
+      return '<li class="'+(k.status==='done'?'d':'')+'">'+esc(k.title)+'</li>'; }).join('')+
+      (ks.length>5?'<li>+'+(ks.length-5)+' lagi</li>':'')+'</ul>':'');
+  el.classList.add('on');
+  tipPlace(ev.currentTarget);
+}
+function tipPlace(anchor){
+  const el=document.getElementById('tip'), r=anchor.getBoundingClientRect();
+  const w=el.offsetWidth, h=el.offsetHeight, pad=8;
+  let left=r.left, top=r.bottom+6;
+  if(left+w>innerWidth-pad) left=Math.max(pad,innerWidth-w-pad);
+  if(top+h>innerHeight-pad) top=Math.max(pad,r.top-h-6);
+  el.style.left=left+'px'; el.style.top=top+'px';
+}
+function tipHide(){ clearTimeout(TIPT);
+  TIPT=setTimeout(function(){ document.getElementById('tip').classList.remove('on'); },60); }
+function fmtDay(ds){
+  if(!ds) return '';
+  const d=new Date(ds+'T00:00');
+  return DAYS[(d.getDay()+6)%7]+', '+d.getDate()+' '+MONTHS[d.getMonth()].slice(0,3)+' '+d.getFullYear();
+}
+function remindSummary(t){
+  if(isRange(t)) return 'tiap hari jam '+(t.time||MAIL.eff_time||'09:00');
+  const lead=t.remind||MAIL.eff_lead;
+  const to=(t.remind_to||'').trim()||MAIL.eff_to||'';
+  return fmtLead(lead)+' sebelumnya'+(to?' \u2192 '+to:'');
+}
+addEventListener('scroll',function(){ document.getElementById('tip').classList.remove('on'); },true);
+
 /* ---- detail drawer ---- */
-function openTask(id){ SEL=id; renderDrw();
+function openTask(id){ SEL=id; tipHide(); renderDrw();
   document.getElementById('ov').classList.add('on');
   document.getElementById('drw').classList.add('on'); }
 function closeDrw(){ SEL=null;
@@ -823,7 +890,7 @@ function tdel(id){ DATA.tasks=DATA.tasks.filter(t=>t.id!==id&&t.parent!==id); re
 
 /* ---- drag a pill onto another day to reschedule ---- */
 let DRAG=null;
-function dstart(ev,id){ DRAG=id; ev.dataTransfer.effectAllowed='move';
+function dstart(ev,id){ DRAG=id; tipHide(); ev.dataTransfer.effectAllowed='move';
   try{ev.dataTransfer.setData('text/plain',id);}catch(e){} }
 function dend(ev){ DRAG=null; }
 function dover(ev,ds){ ev.preventDefault(); const c=document.getElementById('d-'+ds); if(c)c.classList.add('over'); }
