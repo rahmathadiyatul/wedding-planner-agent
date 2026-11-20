@@ -373,6 +373,25 @@ _PAGE = r"""<!doctype html>
            background:linear-gradient(180deg,transparent,var(--bg) 38%)}
   .savebar .muted{font-size:12px}
 
+  /* sync status (replaces the Simpan button) */
+  .sync{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;
+        background:var(--surface);border:1px solid var(--line);font-weight:600;font-size:13px;
+        box-shadow:var(--shadow-sm)}
+  .sync .sd{width:8px;height:8px;border-radius:50%;background:var(--in)}
+  .sync.busy .sd{background:var(--warn);animation:pulse 1s ease-in-out infinite}
+  .sync.err{color:var(--out);border-color:var(--out)}
+  .sync.err .sd{background:var(--out)}
+  @keyframes pulse{50%{opacity:.3}}
+  /* undo toast */
+  .toast{position:fixed;left:50%;bottom:24px;transform:translate(-50%,20px);z-index:70;opacity:0;
+         pointer-events:none;display:flex;align-items:center;gap:14px;padding:10px 10px 10px 18px;
+         border-radius:999px;background:var(--fg);color:var(--bg);font-weight:600;font-size:13px;
+         box-shadow:var(--shadow-lg);transition:opacity .18s,transform .18s;max-width:calc(100% - 32px)}
+  .toast.on{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+  .toast #toast-msg{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .toast .btn{background:transparent;color:var(--bg);border-color:color-mix(in srgb,var(--bg) 40%,transparent)}
+  .toast .btn:hover{color:var(--bg);border-color:var(--bg)}
+
   @media (max-width: 1100px){
     .cards{grid-template-columns:repeat(2,minmax(0,1fr))}
   }
@@ -444,6 +463,7 @@ _PAGE = r"""<!doctype html>
     .grid2{grid-template-columns:1fr}
     .panel{padding:16px}
     .savebar{bottom:calc(64px + env(safe-area-inset-bottom));padding:10px 16px}
+    .toast{bottom:calc(76px + env(safe-area-inset-bottom))}
     .savebar .muted{display:none}
     button.primary{flex:1}
   }
@@ -595,7 +615,7 @@ _PAGE = r"""<!doctype html>
           Pengingat email aktif</label>
 
         <div class="bar" style="margin:16px 0 0">
-          <button class="btn" onclick="mailTest()">Kirim email tes</button>
+          <button class="btn" id="m-testbtn" onclick="mailTest()">Kirim email tes ke penerima default</button>
           <span id="m-testmsg" class="muted sm"></span>
         </div>
         </div>
@@ -608,13 +628,15 @@ _PAGE = r"""<!doctype html>
     </div>
 
     <div class="savebar">
-      <button class="primary" onclick="save()">Simpan</button>
-      <button class="btn" onclick="reloadPlan()" title="ambil data terbaru dari server">&#8635; Muat ulang</button>
-      <span id="status" class="ok"></span>
-      <span class="muted">Simpan terakhir yang menang.</span>
+      <div class="sync ok" id="sync" role="status" aria-live="polite">
+        <span class="sd"></span><span class="st">Tersimpan</span></div>
+      <button class="btn" onclick="poll(true)" title="ambil perubahan terbaru, mis. dari bot WhatsApp">&#8635; Segarkan</button>
+      <span class="muted">Tersimpan otomatis &middot; perubahan dari bot ikut masuk sendiri</span>
     </div>
   </main>
 </div>
+<div class="toast" id="toast" role="status" aria-live="polite">
+  <span id="toast-msg"></span><button class="btn" id="toast-undo">Urungkan</button></div>
 <div class="tip" id="tip" aria-hidden="true"></div>
 <div class="ov" id="ov" onclick="closeDrw()"></div>
 <div class="drw" id="drw"></div>
@@ -622,13 +644,16 @@ _PAGE = r"""<!doctype html>
 <script>
 const TOKEN = "__TOKEN__";
 let DATA = __DATA__;
-const MAIL = __MAIL__;
+let MAIL = __MAIL__;
 DATA.entries = DATA.entries || []; DATA.tasks = DATA.tasks || [];
 DATA.entries.forEach(e=>{ if(!e.parent) e.parent=''; });
 DATA.tasks.forEach(t=>{ if(!t.parent) t.parent=''; });
 
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const tmp = () => 'tmp-'+Math.random().toString(36).slice(2,9);
+/* Ids are minted here and kept by the server, so a row keeps the same id
+   before and after it is saved -- handlers bound to it never go stale. */
+const tmp = () => { const a=new Uint8Array(4); crypto.getRandomValues(a);
+  return Array.from(a,function(b){return b.toString(16).padStart(2,'0');}).join(''); };
 
 /* ================= view switching ================= */
 let VIEW='fin';
@@ -826,7 +851,13 @@ function addTop(){ DATA.entries.push({id:tmp(),kind:TAB,status:'expected',item:'
 function addSub(pid){ const p=byId(pid); if(!p) return;
   DATA.entries.push({id:tmp(),kind:p.kind,status:p.status,item:'',amount:0,category:p.category||'',date:'',parent:pid});
   SUBOPEN.add(pid); saveOpen(); render(); }
-function del(id){ DATA.entries=DATA.entries.filter(e=>e.id!==id&&e.parent!==id); render(); }
+function del(id){
+  const gone=DATA.entries.filter(e=>e.id===id||e.parent===id); if(!gone.length) return;
+  const at=DATA.entries.indexOf(gone[0]), top=gone.find(e=>e.id===id), n=gone.length-1;
+  DATA.entries=DATA.entries.filter(e=>gone.indexOf(e)===-1); render();
+  toast('Dihapus: '+(top.item||'(tanpa nama)')+(n?' + '+n+' rincian':''), function(){
+    DATA.entries.splice(Math.min(at,DATA.entries.length),0,...gone); render(); });
+}
 
 /* ================= TO-DO (calendar) =================
    Tasks live on a calendar keyed by `due`. Status is no longer a column --
@@ -1108,7 +1139,13 @@ function addTask(due){ const id=tmp();
 function addCk(pid){ const p=tById(pid); if(!p) return;
   DATA.tasks.push({id:tmp(),title:'',detail:'',status:'todo',category:'',due:'',parent:pid});
   renderDrw(); renderBoard(); }
-function tdel(id){ DATA.tasks=DATA.tasks.filter(t=>t.id!==id&&t.parent!==id); renderDrw(); renderBoard(); }
+function tdel(id){
+  const gone=DATA.tasks.filter(t=>t.id===id||t.parent===id); if(!gone.length) return;
+  const at=DATA.tasks.indexOf(gone[0]), top=gone.find(t=>t.id===id), n=gone.length-1;
+  DATA.tasks=DATA.tasks.filter(t=>gone.indexOf(t)===-1); renderDrw(); renderBoard();
+  toast('Dihapus: '+(top.title||'(tanpa judul)')+(n?' + '+n+' checklist':''), function(){
+    DATA.tasks.splice(Math.min(at,DATA.tasks.length),0,...gone); renderBoard(); if(SEL) renderDrw(); });
+}
 
 /* ---- drag a pill onto another day to reschedule ---- */
 let DRAG=null;
@@ -1198,66 +1235,211 @@ function renderSettings(){
   renderPeople(); renderDefaultTo();
 }
 async function mailTest(){
-  const el=document.getElementById('m-testmsg');
+  const el=document.getElementById('m-testmsg'), btn=document.getElementById('m-testbtn');
+  if(btn) btn.disabled=true;
+  el.textContent='menyimpan pengaturan...';
+  await settle();
   el.textContent='mengirim...';
   try{
-    const r=await fetch('/api/mailtest?token='+encodeURIComponent(TOKEN),
-      {method:'POST',headers:{'content-type':'application/json'},
-       body:JSON.stringify({mail:MAIL,to:''})});
+    const r=await fetch(api('/api/mailtest'),
+      {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({to:''})});
     const j=await r.json();
     el.textContent=j.message||'selesai';
   }catch(e){ el.textContent='gagal: '+e; }
+  if(btn) btn.disabled=false;
 }
 
 /* ================= save ================= */
-/* The bot writes to the same file from WhatsApp. This page holds whatever it
-   loaded, so a plain save would silently wipe anything added since. Check the
-   server's revision first and let the human decide. */
-async function serverStamp(){
-  try{
-    const r=await fetch('/api/plan?token='+encodeURIComponent(TOKEN));
-    if(!r.ok) return null;
-    return (await r.json()).updated_at || null;
-  }catch(e){ return null; }
+/* ================= sync =================
+   There is no Simpan button. Every edit is sent about a second later as a
+   PATCH -- only the rows that changed -- and the server merges it row by row.
+   The WhatsApp bot writes the same file, so merging (never overwriting) is
+   what keeps both sides' work. The page also pulls in the bot's changes every
+   30 seconds and whenever the tab comes back into view.
+
+   Three snapshots matter:
+     BASE  -- the server's copy as of the last save or poll
+     DATA  -- what is on screen, including edits not yet sent
+     sent  -- canonical form of each row in the request in flight
+   A row is "edited here" when DATA differs from BASE; only those are sent,
+   and only those survive a merge over a newer server copy. */
+const api = (path) => (path||'/api/plan')+'?token='+encodeURIComponent(TOKEN);
+const clone = (o) => JSON.parse(JSON.stringify(o));
+function canon(r,skip){ const o={}; Object.keys(r).sort().forEach(function(k){ if(k!==skip) o[k]=r[k]; });
+  return JSON.stringify(o); }
+const ckey = (kind,r) => canon(r, kind==='tasks'?'notified':'');   /* scheduler-owned */
+function mailPayload(m){ m=m||MAIL; return {from_email:m.from_email||'', from_name:m.from_name||'',
+  people:(m.people||[]).map(function(x){return {name:x.name||'', email:x.email||''};}),
+  default_to:m.default_to||'', default_lead:m.default_lead||'', default_time:m.default_time||'',
+  enabled:m.enabled!==false}; }
+let BASE=null, MAILBASE='', SAVING=false, AGAIN=false, TIMER=null, FAILED=false, NEEDRENDER=false;
+function takeBase(d){ BASE={entries:clone(d.entries||[]), tasks:clone(d.tasks||[]),
+  notes:d.notes||'', stamp:d.updated_at||''}; }
+const blankEntry = e => !(e.item||'').trim() && !(Number(e.amount)||0);
+const blankTask  = t => !(t.title||'').trim();
+
+function diffRows(kind){
+  const cur=DATA[kind], base=BASE[kind];
+  const bm=new Map(base.map(r=>[r.id,r])), cm=new Map(cur.map(r=>[r.id,r]));
+  const isBlank = kind==='entries'?blankEntry:blankTask;
+  const up=[], del=[];
+  cur.forEach(function(r){ const b=bm.get(r.id);
+    if(!b){ if(isBlank(r) && !cur.some(x=>x.parent===r.id)) return;   /* not started yet */
+            up.push(r); }
+    else if(ckey(kind,r)!==ckey(kind,b)) up.push(r); });
+  base.forEach(function(b){ if(!cm.has(b.id)) del.push(b.id); });
+  return (up.length||del.length)?{upsert:up,delete:del}:null;
 }
-async function reloadPlan(){
-  const st=document.getElementById('status'); st.textContent='memuat ulang...';
-  try{
-    const r=await fetch('/api/plan?token='+encodeURIComponent(TOKEN));
-    adopt(await r.json());
-    st.textContent='dimuat ulang \u2713'; setTimeout(function(){st.textContent='';},2500);
-  }catch(e){ st.textContent='gagal memuat: '+e.message; }
+function buildPatch(){
+  if(!BASE) return null;
+  const p={base:BASE.stamp}; let any=false;
+  ['entries','tasks'].forEach(function(k){ const d=diffRows(k); if(d){ p[k]=d; any=true; } });
+  if((DATA.notes||'')!==BASE.notes){ p.notes=DATA.notes||''; any=true; }
+  const m=JSON.stringify(mailPayload()); if(m!==MAILBASE){ p.mail=mailPayload(); any=true; }
+  return any?p:null;
 }
-function adopt(d){
-  DATA=d; DATA.entries=DATA.entries||[]; DATA.tasks=DATA.tasks||[];
-  DATA.entries.forEach(e=>{ if(!e.parent) e.parent=''; });
-  DATA.tasks.forEach(t=>{ if(!t.parent) t.parent=''; });
-  document.getElementById('notes').value=DATA.notes||'';
-  render(); if(VIEW==='kan') renderBoard(); if(VIEW==='set') renderSettings();
+
+function mergeRows(kind, srv, sent){
+  const L=new Map(DATA[kind].map(r=>[r.id,r])), B=new Map(BASE[kind].map(r=>[r.id,r]));
+  const out=[], seen=new Set();
+  srv.forEach(function(s){ seen.add(s.id); const l=L.get(s.id);
+    if(!l){ if(!B.has(s.id)) out.push(s); return; }      /* new from the bot -> take; deleted here -> skip */
+    const lk=ckey(kind,l);
+    if((sent && sent[s.id]===lk) || (B.has(s.id) && lk===ckey(kind,B.get(s.id)))) out.push(s);
+    else out.push(l);                                      /* edited here, not saved yet -> keep ours */
+  });
+  DATA[kind].forEach(function(l){ if(seen.has(l.id)) return;
+    const b=B.get(l.id);
+    if(b && ckey(kind,l)===ckey(kind,b)) return;          /* removed on the server, untouched here */
+    out.push(l); });                                       /* new here, not saved yet */
+  out.forEach(function(r){ if(!r.parent) r.parent=''; });
+  return out;
 }
-async function save(){
-  const stamp=await serverStamp();
-  if(stamp && DATA.updated_at && stamp!==DATA.updated_at){
-    const ok=confirm('Data di server sudah berubah sejak halaman ini dibuka '+
-      '(mungkin dari bot WhatsApp).\n\nOK = timpa dengan yang di layar ini.\n'+
-      'Cancel = batal, muat ulang data terbaru.');
-    if(!ok){ await reloadPlan(); return; }
+function merge(d, sent){
+  sent=sent||{};
+  const before=JSON.stringify([DATA.entries,DATA.tasks,DATA.notes]);
+  const mailBefore=JSON.stringify(MAIL);
+  DATA.entries=mergeRows('entries', d.entries||[], sent.entries);
+  DATA.tasks=mergeRows('tasks', d.tasks||[], sent.tasks);
+  const nl=DATA.notes||'';
+  if(!(nl!==BASE.notes && nl!==sent.notes)) DATA.notes=d.notes||'';
+  DATA.updated_at=d.updated_at;
+  if(d.mail_view){
+    const mine=JSON.stringify(mailPayload());
+    if(mine!==MAILBASE && mine!==sent.mail){              /* Settings edited meanwhile: keep the edits */
+      ['ready','why','transport','has_secret','eff_lead','eff_time','eff_to','eff_from',
+       'eff_from_name','tz','leads','lead_labels'].forEach(function(k){ MAIL[k]=d.mail_view[k]; });
+    } else MAIL=d.mail_view;
+    MAILBASE=JSON.stringify(mailPayload(d.mail_view));
   }
-  const body={mail:MAIL,
-    entries:DATA.entries.filter(e=>e.item||e.amount||kids(e.id).length),
-    tasks:DATA.tasks.filter(t=>(t.title||'').trim()),
-    notes:document.getElementById('notes').value };
-  const st=document.getElementById('status'); st.textContent='menyimpan...';
+  takeBase(d);
+  if(JSON.stringify([DATA.entries,DATA.tasks,DATA.notes])!==before || JSON.stringify(MAIL)!==mailBefore)
+    softRender();
+}
+
+/* Re-render without yanking the cursor out of a field: if someone is typing,
+   wait until they leave the field. Ids are stable, so a late render is safe. */
+function softRender(){
+  const a=document.activeElement;
+  if(a && a.matches && a.matches('input,textarea,select')){ NEEDRENDER=true; return; }
+  NEEDRENDER=false; repaint();
+}
+function repaint(){
+  render();
+  if(VIEW==='kan') renderBoard(); else updateKanCount();
+  if(VIEW==='set') renderSettings();
+  const n=document.getElementById('notes'); if(n && document.activeElement!==n) n.value=DATA.notes||'';
+  if(SEL){ if(tById(SEL)) renderDrw(); else closeDrw(); }
+}
+document.addEventListener('focusout',function(){
+  setTimeout(function(){ if(NEEDRENDER) softRender(); },0); });
+
+function scheduleSave(){ clearTimeout(TIMER); TIMER=setTimeout(flush,900); paintSave(); }
+async function flush(){
+  clearTimeout(TIMER); TIMER=null;
+  if(SAVING){ AGAIN=true; return; }
+  const patch=buildPatch(); if(!patch){ paintSave(); return; }
+  SAVING=true; paintSave();
+  const sent={entries:{}, tasks:{}, notes:patch.notes,
+              mail:patch.mail?JSON.stringify(patch.mail):null};
+  ['entries','tasks'].forEach(function(k){
+    ((patch[k]&&patch[k].upsert)||[]).forEach(function(r){ sent[k][r.id]=ckey(k,r); }); });
   try{
-    const r=await fetch('/api/plan?token='+encodeURIComponent(TOKEN),
-      {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
-    if(!r.ok) throw new Error(r.status);
-    adopt(await r.json());
-    st.textContent='tersimpan ✓'; setTimeout(function(){st.textContent='';},2500);
-  }catch(e){ st.textContent='gagal menyimpan: '+e.message; }
+    const r=await fetch(api(),{method:'POST',headers:{'content-type':'application/json'},
+                              body:JSON.stringify({patch:patch})});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    merge(await r.json(), sent);
+    FAILED=false;
+  }catch(e){
+    FAILED=true;
+    setTimeout(function(){ if(FAILED){ FAILED=false; scheduleSave(); } }, 5000);
+  }
+  SAVING=false;
+  if(!FAILED && (AGAIN || buildPatch())){ AGAIN=false; scheduleSave(); }
+  paintSave();
+}
+/* resolves once nothing is pending -- used before actions that read the server */
+async function settle(){
+  for(let i=0;i<60;i++){
+    if(TIMER){ await flush(); continue; }
+    if(!SAVING && !buildPatch()) return;
+    if(!SAVING){ await flush(); continue; }
+    await new Promise(function(r){ setTimeout(r,150); });
+  }
+}
+function paintSave(){
+  const el=document.getElementById('sync'); if(!el) return;
+  let cls='ok', txt='Tersimpan';
+  if(FAILED){ cls='err'; txt='Gagal menyimpan \u2014 mencoba lagi'; }
+  else if(SAVING){ cls='busy'; txt='Menyimpan\u2026'; }
+  else if(TIMER && buildPatch()){ cls='busy'; txt='Ada perubahan\u2026'; }
+  el.className='sync '+cls; el.querySelector('.st').textContent=txt;
+}
+
+async function poll(force){
+  if(SAVING || TIMER) return;
+  try{
+    const r=await fetch(api()); if(!r.ok) return;
+    const d=await r.json();
+    if(force || d.updated_at!==BASE.stamp) merge(d, null);
+    if(force){ toast('Data terbaru sudah dimuat'); }
+  }catch(e){}
+}
+/* last-chance delivery when the tab is hidden or closed (phones kill tabs) */
+function beacon(){
+  const patch=buildPatch(); if(!patch) return true;
+  try{ return navigator.sendBeacon(api(), new Blob([JSON.stringify({patch:patch})],
+                                                     {type:'application/json'})); }
+  catch(e){ return false; }
+}
+document.addEventListener('visibilitychange',function(){
+  if(document.visibilityState==='visible') poll(); else beacon(); });
+addEventListener('pagehide', beacon);
+addEventListener('beforeunload',function(e){
+  if((TIMER||SAVING||buildPatch()) && !beacon()){ e.preventDefault(); e.returnValue=''; } });
+setInterval(function(){ if(document.visibilityState==='visible') poll(); }, 30000);
+
+/* Any edit anywhere schedules a save; if nothing actually changed, the patch
+   is empty and no request is made. Listeners bubble, so they run after the
+   inline handlers that made the change. */
+['input','change','click','drop'].forEach(function(ev){
+  document.addEventListener(ev, function(){ scheduleSave(); }); });
+addEventListener('keydown',function(e){
+  if((e.ctrlKey||e.metaKey) && e.key==='s'){ e.preventDefault(); flush(); } });
+
+/* undo toast */
+let TOASTT=null;
+function toast(msg, undo){
+  const t=document.getElementById('toast'), b=document.getElementById('toast-undo');
+  document.getElementById('toast-msg').textContent=msg;
+  b.style.display=undo?'':'none';
+  b.onclick=function(){ if(undo) undo(); t.classList.remove('on'); scheduleSave(); };
+  t.classList.add('on'); clearTimeout(TOASTT);
+  TOASTT=setTimeout(function(){ t.classList.remove('on'); }, undo?8000:2500);
 }
 
 document.getElementById('notes').value = DATA.notes || '';
-render();
+takeBase(DATA); MAILBASE=JSON.stringify(mailPayload());
+render(); paintSave();
 </script>
 </body></html>"""

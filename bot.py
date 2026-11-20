@@ -394,6 +394,17 @@ def tool_task_update(id: str, title: str = "", detail: str = "", status: str = "
     return f"ok, [{t['id']}] '{t['title']}' -> {t['status']}"
 
 
+def plan_view(data: dict) -> dict:
+    """What the web page gets back: the plan plus the resolved mail settings,
+    so its Settings status refreshes after every save or poll."""
+    out = dict(data)
+    try:
+        out["mail_view"] = mailer.web_config(data.get("mail"))
+    except Exception as e:  # noqa: BLE001
+        out["mail_view"] = {"ready": False, "why": f"mailer error: {e!r}"}
+    return out
+
+
 def mail_conf() -> dict:
     """Reminder settings: saved in plan.json, with .env as the fallback."""
     try:
@@ -1280,7 +1291,7 @@ def run_webhook(waha: "Waha") -> int:
             if path == "/api/plan":
                 if not self._token_ok(q):
                     return self._send(403, "forbidden")
-                return self._send(200, json.dumps(get_plan().read(), ensure_ascii=False),
+                return self._send(200, json.dumps(plan_view(get_plan().read()), ensure_ascii=False),
                                   "application/json; charset=utf-8")
             # Throwaway QR links (own short-lived tokens, not DOC_TOKEN).
             if path == "/qr":
@@ -1342,12 +1353,19 @@ def run_webhook(waha: "Waha") -> int:
                     payload = json.loads(body or b"{}")
                 except Exception:  # noqa: BLE001
                     return self._send(400, "bad json")
-                get_plan().replace_all(payload.get("entries") or [], payload.get("notes"))
-                if isinstance(payload.get("tasks"), list):
-                    get_plan().replace_tasks(payload["tasks"])
-                if isinstance(payload.get("mail"), dict):
-                    get_plan().replace_mail(payload["mail"])
-                return self._send(200, json.dumps(get_plan().read(), ensure_ascii=False),
+                if isinstance(payload.get("patch"), dict):
+                    # Current pages: a row-level patch, merged on the server.
+                    data = get_plan().apply_patch(payload["patch"])
+                else:
+                    # Pages opened before the autosave release still send the
+                    # whole plan. Accept it so an old tab can't error out.
+                    get_plan().replace_all(payload.get("entries") or [], payload.get("notes"))
+                    if isinstance(payload.get("tasks"), list):
+                        get_plan().replace_tasks(payload["tasks"])
+                    if isinstance(payload.get("mail"), dict):
+                        get_plan().replace_mail(payload["mail"])
+                    data = get_plan().read()
+                return self._send(200, json.dumps(plan_view(data), ensure_ascii=False),
                                   "application/json; charset=utf-8")
             if path == "/api/mailtest":
                 if not DOC_TOKEN or (q.get("token") or [""])[0] != DOC_TOKEN:

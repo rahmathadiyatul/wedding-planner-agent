@@ -145,7 +145,11 @@ def web_config(saved: dict | None = None) -> dict:
     return {
         "from_email": s.get("from_email", ""),
         "from_name": s.get("from_name", ""),
-        "people": [{"name": n, "email": e} for n, e in sorted(c["people"].items())],
+        # Saved people come back exactly as typed (capitals, order). The
+        # lowercased map in conf() is only for matching names to addresses.
+        "people": ([{"name": str(p.get("name") or ""), "email": str(p.get("email") or "")}
+                    for p in (s.get("people") or []) if isinstance(p, dict) and p.get("name")]
+                   or [{"name": n, "email": e} for n, e in sorted(c["people"].items())]),
         "default_to": s.get("default_to", ""),
         "default_lead": s.get("default_lead", ""),
         "default_time": s.get("default_time", ""),

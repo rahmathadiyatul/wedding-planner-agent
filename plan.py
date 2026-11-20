@@ -110,14 +110,80 @@ class PlanStore:
         with self._lock:
             return self._read_locked()["mail"]
 
+    def apply_patch(self, patch: dict) -> dict:
+        """Merge an edit from the web page, row by row.
+
+        The page sends only what it changed: rows to upsert and ids to
+        delete, per collection, plus notes/mail when those changed. Every
+        other row is left exactly as it is on disk -- which is the point:
+        the WhatsApp bot writes this same file, and a whole-file overwrite
+        from a page that loaded ten minutes ago would erase the bot's work.
+
+        Rules:
+          * deleting a parent also deletes its children, unless the same
+            patch re-sends a child (it was moved, not removed);
+          * an upsert replaces the row with that id in place, or appends;
+          * a row whose name is blank is kept when it still has children,
+            so a breakdown is never orphaned by an unnamed parent;
+          * `notified` on a task belongs to the reminder scheduler -- the
+            page can never set it, so a save can't make a reminder re-fire.
+        """
+        patch = patch if isinstance(patch, dict) else {}
+        with self._lock:
+            data = self._read_locked()
+            for key, clean in (("entries", _clean), ("tasks", _clean_task)):
+                part = patch.get(key)
+                if not isinstance(part, dict):
+                    continue
+                rows = list(data.get(key) or [])
+                ups = [r for r in (part.get("upsert") or []) if isinstance(r, dict)]
+                up_ids = {str(r.get("id") or "") for r in ups}
+                dels = {str(x) for x in (part.get("delete") or []) if x}
+                grew = True
+                while grew:                      # cascade to children, grandchildren...
+                    grew = False
+                    for r in rows:
+                        rid = r.get("id")
+                        if (r.get("parent") in dels and rid not in dels
+                                and rid not in up_ids):
+                            dels.add(rid)
+                            grew = True
+                rows = [r for r in rows if r.get("id") not in dels]
+                index = {r.get("id"): i for i, r in enumerate(rows)}
+                for raw in ups:
+                    c = clean(raw)
+                    if not c.get("id") or str(c["id"]).startswith("tmp-"):
+                        c["id"] = uuid.uuid4().hex[:8]
+                    if key == "tasks":
+                        prev = rows[index[c["id"]]] if c["id"] in index else {}
+                        c["notified"] = str(prev.get("notified") or "")
+                    if c["id"] in index:
+                        rows[index[c["id"]]] = c
+                    else:
+                        index[c["id"]] = len(rows)
+                        rows.append(c)
+                ids = {r.get("id") for r in rows}
+                for r in rows:
+                    p = r.get("parent") or ""
+                    if p and (p not in ids or p == r.get("id")):
+                        r["parent"] = ""
+                data[key] = rows
+            if isinstance(patch.get("notes"), str):
+                data["notes"] = patch["notes"]
+            if isinstance(patch.get("mail"), dict):
+                data["mail"] = _clean_mail(patch["mail"])
+            self._write_locked(data)
+            return data
+
     def replace_all(self, entries: list, notes: str | None = None) -> None:
         """Full save from the web page."""
         with self._lock:
             data = self._read_locked()
             cleaned, idmap = [], {}
+            parents = {str(e.get("parent") or "") for e in entries if e.get("parent")}
             for e in entries:
                 c = _clean(e)
-                if not c["item"] and not c["amount"]:
+                if not c["item"] and not c["amount"] and str(e.get("id") or "") not in parents:
                     continue
                 old = str(e.get("id") or "")
                 if not old or old.startswith("tmp-"):
