@@ -373,6 +373,18 @@ _PAGE = r"""<!doctype html>
            background:linear-gradient(180deg,transparent,var(--bg) 38%)}
   .savebar .muted{font-size:12px}
 
+  /* ledger helpers */
+  .cap{font-size:11px;color:var(--muted);text-align:right;padding:0 10px;text-decoration:line-through}
+  tr.hit td{background:color-mix(in srgb,var(--gold-soft) 70%,transparent)}
+  .card .s.link{background:none;border:0;padding:0;font:inherit;font-size:12px;cursor:pointer;
+                text-align:left;text-decoration:underline;text-underline-offset:3px}
+  .fchip{display:inline-flex;align-items:center;gap:6px;background:var(--gold-soft);color:var(--gold);
+         border-radius:999px;padding:5px 6px 5px 12px;font-size:12px;font-weight:600}
+  .fchip button{background:transparent;border:0;color:inherit;cursor:pointer;font-size:12px;
+                width:20px;height:20px;border-radius:50%}
+  .fchip button:hover{background:color-mix(in srgb,var(--gold) 20%,transparent)}
+  select:disabled{opacity:1;color:var(--muted);cursor:default}
+
   /* sync status (replaces the Simpan button) */
   .sync{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;
         background:var(--surface);border:1px solid var(--line);font-weight:600;font-size:13px;
@@ -523,7 +535,8 @@ _PAGE = r"""<!doctype html>
           <button class="btn" onclick="addTop()">+ Tambah baris</button>
           <button class="btn" onclick="clearFilters()">Bersihkan filter</button>
           <button class="btn" onclick="toggAll()">Buka/tutup rincian</button>
-          <span class="muted">Nominal boleh 5000000 atau 5.000.000 &middot; pakai &ldquo;+ sub&rdquo; untuk rincian</span>
+          <span id="fchip"></span>
+          <span class="muted">Nominal: 5000000, 5.000.000, 5jt, 1,5 juta, 500rb &middot; Enter = baris berikutnya</span>
         </div>
         <div class="tablewrap">
           <table>
@@ -711,21 +724,59 @@ function toggAll(){ const tops=DATA.entries.filter(e=>e.kind===TAB&&!e.parent&&k
   tops.forEach(e=>{ anyShut?SUBOPEN.add(e.id):SUBOPEN.delete(e.id); }); saveOpen(); render(); }
 
 const rp = n => { n=Math.round(Number(n)||0); return (n<0?'-':'')+'Rp '+Math.abs(n).toLocaleString('id-ID'); };
-const digits = s => { const neg=String(s).trim().startsWith('-');
-  const d=String(s||'').replace(/[^0-9]/g,''); const n=d?parseInt(d,10):0; return neg?-n:n; };
+/* "5jt", "1,5 juta", "500rb", "2.5k", "Rp 1.500.000,00" -> rupiah. The same
+   rules live in parse_amount() on the server -- keep the two in step. */
+function parseAmount(v){
+  let s=String(v==null?'':v).toLowerCase().replace(/rp\.?/g,'').replace(/\s+/g,'');
+  if(!s) return 0;
+  const neg=s.charAt(0)==='-'; if(neg) s=s.slice(1);
+  let mult=1;
+  const m=s.match(/(miliar|milyar|juta|jt|j|ribu|rb|k)$/);
+  if(m){ mult={miliar:1e9,milyar:1e9,juta:1e6,jt:1e6,j:1e6,ribu:1e3,rb:1e3,k:1e3}[m[1]];
+         s=s.slice(0,-m[1].length); }
+  s=s.replace(/[^0-9.,]/g,'');
+  const dot=s.indexOf('.')!==-1, com=s.indexOf(',')!==-1;
+  let n;
+  if(dot&&com) n=parseFloat(s.replace(/\./g,'').replace(',','.'));     /* 1.500.000,50 */
+  else if(com||dot){
+    const sep=com?',':'.', parts=s.split(sep);
+    /* one separator NOT followed by exactly three digits is a decimal point */
+    n=(parts.length===2 && parts[1].length!==3) ? parseFloat(parts[0]+'.'+parts[1])
+                                                : parseFloat(parts.join(''));
+  } else n=parseFloat(s);
+  if(!isFinite(n)) n=0;
+  n=Math.round(n*mult);
+  return neg?-n:n;
+}
+const digits = parseAmount;
 const byId = id => DATA.entries.find(e=>e.id===id);
 const kids = id => DATA.entries.filter(e=>e.parent===id);
 /* Sub-items win only once one of them carries a number; until then the
    parent's own estimate stands (see amount_of in plan.py). */
 const kidSum = e => kids(e.id).reduce((a,c)=>a+amountOf(c),0);
 const amountOf = e => { const s=kidSum(e); return s || (Number(e.amount)||0); };
+/* What a row contributes to the totals, as [status, amount] pairs. Once a
+   breakdown carries numbers, each sub-item counts under ITS OWN status --
+   "DP sudah dibayar, pelunasan masih rencana" -- not the parent's. */
+function leafParts(e){
+  const k=kids(e.id);
+  if(k.length && kidSum(e)>0){ let out=[]; k.forEach(function(c){ out=out.concat(leafParts(c)); }); return out; }
+  return [[e.status, Number(e.amount)||0]];
+}
+function derivedStatus(e){
+  const parts=leafParts(e).filter(x=>x[1]);
+  if(!parts.length) return e.status;
+  const paid=parts.filter(x=>x[0]==='actual').length;
+  return paid===parts.length?'actual':(paid?'mixed':'expected');
+}
 const blankCount = () => { const par=new Set(DATA.entries.filter(e=>e.parent).map(e=>e.parent));
   return DATA.entries.filter(e=>!par.has(e.id) && !(Number(e.amount)||0)).length; };
 const countTop = k => DATA.entries.filter(e=>e.kind===k && !e.parent).length;
 
 function updateSummary(){
   const tops=DATA.entries.filter(e=>!e.parent);
-  const t=(k,s)=>tops.filter(e=>e.kind===k&&e.status===s).reduce((a,e)=>a+amountOf(e),0);
+  const t=(k,s)=>tops.filter(e=>e.kind===k).reduce(function(a,e){
+    return a+leafParts(e).filter(x=>x[0]===s).reduce((b,x)=>b+x[1],0); },0);
   const ia=t('income','actual'), ie=t('income','expected'), ea=t('expense','actual'), ee=t('expense','expected');
   const cards=[
     ['Uang di tangan', rp(ia-ea), 'diterima - dibayar', (ia-ea)>=0?'in':'out', true],
@@ -744,7 +795,9 @@ function updateSummary(){
   document.getElementById('cards').innerHTML = cards.map(function(c,i){
     return '<div class="card'+(c[4]?' big':'')+'"><div class="l">'+c[0]+'</div>'+
            '<div class="v '+c[3]+'">'+c[1]+'</div>'+
-           (c[2]?'<div class="s'+(/belum ada nominal/.test(c[2])?' warn':'')+'">'+c[2]+'</div>':'')+
+           (c[2]?(/belum ada nominal/.test(c[2])
+             ?'<button class="s warn link" onclick="showBlank()">'+c[2]+' &rarr;</button>'
+             :'<div class="s">'+c[2]+'</div>'):'')+
            (i===1?meter:'')+
            '</div>'; }).join('');
   document.getElementById('tab-income').textContent='Pemasukan ('+countTop('income')+')';
@@ -752,10 +805,19 @@ function updateSummary(){
 }
 
 const fieldText = (o,k) => k==='amount' ? String(amountOf(o))
-  : k==='status' ? (o.status==='actual'?'sudah':'rencana') : String(o[k]||'');
+  : k==='status' ? ({actual:'sudah',expected:'rencana',mixed:'sebagian'}[derivedStatus(o)]||'')
+  : String(o[k]||'');
 
+/* rows added this session stay pinned at the top, whatever the sort or filter,
+   so a new row never jumps away while you are filling it in */
+const FRESH=new Set();
+function leafBlank(e){ const k=kids(e.id);
+  return k.length ? (kidSum(e)===0 && !(Number(e.amount)||0)) || k.some(leafBlank) : !(Number(e.amount)||0); }
 function visibleTop(){
   const st=ST[TAB]; let rows=DATA.entries.filter(e=>e.kind===TAB && !e.parent);
+  const fresh=rows.filter(e=>FRESH.has(e.id)).reverse();
+  rows=rows.filter(e=>!FRESH.has(e.id));
+  if(st.blank) rows=rows.filter(leafBlank);
   const q=(st.q||'').trim().toLowerCase();
   if(q) rows=rows.filter(function(e){
     const hit=o=>COLS.some(c=>fieldText(o,c.k).toLowerCase().indexOf(q)!==-1);
@@ -771,44 +833,66 @@ function visibleTop(){
     else{x=String(a[k]||'').toLowerCase();y=String(b[k]||'').toLowerCase();
          if(!x&&y)return 1; if(x&&!y)return -1;}
     return x<y?-d:x>y?d:0; });
-  return rows;
+  return fresh.concat(rows);
 }
-const hasFilter=()=>COLS.some(c=>(ST[TAB].f[c.k]||'').trim());
+/* while searching, a parent shown because of a sub-item opens to show it */
+function kidHit(o){
+  const st=ST[TAB], q=(st.q||'').trim().toLowerCase();
+  if(st.blank && leafBlank(o)) return true;
+  if(q && COLS.some(c=>fieldText(o,c.k).toLowerCase().indexOf(q)!==-1)) return true;
+  return COLS.some(function(c){ const f=(st.f[c.k]||'').trim().toLowerCase();
+    return f && fieldText(o,c.k).toLowerCase().indexOf(f)!==-1; });
+}
+const hasFilter=()=>COLS.some(c=>(ST[TAB].f[c.k]||'').trim()) || !!(ST[TAB].q||'').trim() || !!ST[TAB].blank;
 
+let FILTERS_FOR=null;
 function renderHead(){
   const st=ST[TAB];
   document.getElementById('head').innerHTML=COLS.map(function(c){
     const on=st.sort.k===c.k, ar=on?(st.sort.d>0?'&#9650;':'&#9660;'):'&#8645;';
     return '<th class="s" style="'+(c.w?'width:'+c.w:'')+'" onclick="sortBy(\''+c.k+'\')">'+c.t+' <span class="ar">'+ar+'</span></th>';
   }).join('')+'<th style="width:150px"></th>';
-  document.getElementById('filters').innerHTML=COLS.map(function(c){
-    return '<th><input placeholder="filter..." value="'+esc(st.f[c.k]||'')+'" oninput="setFilter(\''+c.k+'\', this.value)"></th>';
-  }).join('')+'<th></th>';
+  /* The filter row is built once per tab. Rebuilding it on every render threw
+     away the input being typed into, so each keystroke lost the cursor. */
+  if(FILTERS_FOR!==TAB){
+    FILTERS_FOR=TAB;
+    document.getElementById('filters').innerHTML=COLS.map(function(c){
+      return '<th><input placeholder="filter..." value="'+esc(st.f[c.k]||'')+'" oninput="setFilter(\''+c.k+'\', this.value)"></th>';
+    }).join('')+'<th></th>';
+  }
 }
-function rowHtml(e,isSub,isLast){
+function rowHtml(e,isSub,isLast,autoOpen,hit){
   /* Two different questions, and they must not share one flag:
        hasKids  -- draw the fold caret, so sub-items are reachable at all
        computed -- the amount is derived from them, so lock the input
      A parent whose sub-items have no numbers yet still HAS sub-items. */
   const k=kids(e.id), hasKids=k.length>0, ksum=kidSum(e), computed=ksum>0;
   const amt=computed?ksum:(Number(e.amount)||0);
-  const open=hasKids&&SUBOPEN.has(e.id);
-  const cls=(isSub?'sub':'')+(open?' hask':'')+(isSub&&isLast?' lastsub':'');
+  const open=hasKids&&(SUBOPEN.has(e.id)||!!autoOpen);
+  const cls=(isSub?'sub':'')+(open?' hask':'')+(isSub&&isLast?' lastsub':'')+(hit?' hit':'');
   const caret=isSub?'<span class="tw">&#8627;</span>'
     : hasKids ? '<button class="cr" title="buka/tutup rincian" onclick="togg(\''+e.id+'\')">'+
         (open?'&#9662;':'&#9656;')+'<b>'+k.length+'</b></button>'
     : '<span class="cr ph"></span>';
-  const sel='<select onchange="upd(\''+e.id+'\',\'status\',this.value)">'+
-    '<option value="actual"'+(e.status==='actual'?' selected':'')+'>Sudah</option>'+
-    '<option value="expected"'+(e.status==='expected'?' selected':'')+'>Rencana</option></select>';
+  /* a parent whose breakdown has numbers takes its status from the breakdown */
+  const ds=computed?derivedStatus(e):e.status;
+  const sel='<select '+(computed?'disabled title="ikut status rinciannya"':'')+
+    ' onchange="upd(\''+e.id+'\',\'status\',this.value)">'+
+    '<option value="actual"'+(ds==='actual'?' selected':'')+'>Sudah</option>'+
+    '<option value="expected"'+(ds==='expected'?' selected':'')+'>Rencana</option>'+
+    (ds==='mixed'?'<option value="mixed" selected>Sebagian</option>':'')+'</select>';
   return '<tr class="'+cls+'" data-id="'+e.id+'">'+
     '<td data-l="Status">'+sel+'</td>'+
     '<td class="ic" data-l="Item">'+caret+'<input value="'+esc(e.item)+'" '+
-      'placeholder="'+(isSub?'rincian...':'mis. Administrasi KUA')+'" oninput="upd(\''+e.id+'\',\'item\',this.value)"></td>'+
-    '<td class="amt" data-l="Nominal"><input inputmode="numeric" '+(computed?'disabled title="total dari sub-item (isi nominalnya di sub-item)"':'')+' '+
+      'placeholder="'+(isSub?'rincian...':'mis. Administrasi KUA')+'" oninput="upd(\''+e.id+'\',\'item\',this.value)" '+
+      'onkeydown="rowKey(event,\''+e.id+'\')"></td>'+
+    '<td class="amt" data-l="Nominal"><input inputmode="numeric" '+(computed?'disabled title="total dari rinciannya"':'')+' '+
       'value="'+(amt?amt.toLocaleString('id-ID'):'')+'" oninput="upd(\''+e.id+'\',\'amount\',digits(this.value))" '+
-      'onblur="this.value=this.value?digits(this.value).toLocaleString(\'id-ID\'):\'\'"></td>'+
-    '<td data-l="Kategori"><input value="'+esc(e.category)+'" oninput="upd(\''+e.id+'\',\'category\',this.value)"></td>'+
+      'onblur="this.value=this.value?digits(this.value).toLocaleString(\'id-ID\'):\'\'" '+
+      'onkeydown="rowKey(event,\''+e.id+'\')">'+
+      (computed&&Number(e.amount)?'<div class="cap">estimasi awal '+rp(e.amount)+'</div>':'')+'</td>'+
+    '<td data-l="Kategori"><input value="'+esc(e.category)+'" oninput="upd(\''+e.id+'\',\'category\',this.value)" '+
+      'onkeydown="rowKey(event,\''+e.id+'\')"></td>'+
     '<td data-l="Tanggal"><input type="date" value="'+esc(e.date)+'" oninput="upd(\''+e.id+'\',\'date\',this.value)"></td>'+
     '<td class="act">'+(isSub?'':'<button class="btn" onclick="addSub(\''+e.id+'\')">+ sub</button> ')+
       '<button class="btn del" onclick="del(\''+e.id+'\')">&#10005;</button></td></tr>';
@@ -818,17 +902,23 @@ function render(){
   const st=ST[TAB], rows=visibleTop(), pages=Math.max(1,Math.ceil(rows.length/PAGE_SIZE));
   if(st.page>pages) st.page=pages;
   const slice=rows.slice((st.page-1)*PAGE_SIZE, st.page*PAGE_SIZE);
-  let h=''; slice.forEach(function(e){ const k=kids(e.id); h+=rowHtml(e,false,false);
-    if(SUBOPEN.has(e.id)) k.forEach(function(c,i){h+=rowHtml(c,true,i===k.length-1);}); });
+  const filtering=hasFilter();
+  let h=''; slice.forEach(function(e){ const k=kids(e.id);
+    const auto=filtering && k.some(kidHit);
+    h+=rowHtml(e,false,false,auto);
+    if(SUBOPEN.has(e.id)||auto) k.forEach(function(c,i){
+      h+=rowHtml(c,true,i===k.length-1,false,filtering&&kidHit(c)); }); });
   document.getElementById('rows').innerHTML = h ||
-    '<tr><td colspan="6" class="empty">Belum ada data'+(hasFilter()?' yang cocok dengan filter':'')+'.</td></tr>';
+    '<tr><td colspan="6" class="empty">'+(hasFilter()?'Tidak ada yang cocok dengan filter.':
+      'Belum ada '+(TAB==='income'?'pemasukan':'pengeluaran')+'. Klik &ldquo;+ Tambah baris&rdquo;, atau minta di WhatsApp: '+
+      '<em>@bang catat '+(TAB==='income'?'tabungan 5jt sudah masuk':'sewa gedung 25jt, rencana')+'</em>')+'</td></tr>';
   document.getElementById('pager').innerHTML=
     '<span class="muted">'+rows.length+' baris utama &middot; halaman '+st.page+'/'+pages+'</span>'+
     '<button class="btn" '+(st.page<=1?'disabled':'')+' onclick="go(-1)">&lsaquo; Sebelumnya</button>'+
     '<button class="btn" '+(st.page>=pages?'disabled':'')+' onclick="go(1)">Berikutnya &rsaquo;</button>';
   document.getElementById('tab-income').className='tab'+(TAB==='income'?' on':'');
   document.getElementById('tab-expense').className='tab'+(TAB==='expense'?' on':'');
-  syncMobile(); updateSummary(); updateKanCount();
+  syncMobile(); paintChip(); updateSummary(); updateKanCount();
 }
 function syncMobile(){
   const st=ST[TAB], sel=document.getElementById('msort');
@@ -840,17 +930,63 @@ function syncMobile(){
 }
 function setSearch(v){ ST[TAB].q=v; ST[TAB].page=1; render(); }
 function setSortSel(v){ const p=v.split(':'); ST[TAB].sort={k:p[0],d:parseInt(p[1],10)}; render(); }
-function setTab(t){ TAB=t; render(); }
+function setTab(t){ TAB=t; FILTERS_FOR=null; render(); }
 function sortBy(k){ const s=ST[TAB].sort; s.d=(s.k===k)?-s.d:1; s.k=k; render(); }
 function setFilter(k,v){ ST[TAB].f[k]=v; ST[TAB].page=1; render(); }
-function clearFilters(){ ST[TAB].f={}; ST[TAB].q=''; ST[TAB].page=1; render(); }
+function clearFilters(){ ST[TAB].f={}; ST[TAB].q=''; ST[TAB].blank=false; ST[TAB].page=1;
+  FILTERS_FOR=null; render(); }
+/* the "N baris belum ada nominal" note jumps straight to those rows */
+function showBlank(){
+  const n=k=>DATA.entries.filter(e=>e.kind===k&&!e.parent&&leafBlank(e)).length;
+  TAB=n('expense')||!n('income')?'expense':'income';
+  ST[TAB].blank=true; ST[TAB].page=1; FILTERS_FOR=null; render();
+  document.querySelector('.tabs').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function paintChip(){
+  const st=ST[TAB], el=document.getElementById('fchip'); if(!el) return;
+  const bits=[];
+  if(st.blank) bits.push('hanya yang belum ada nominal');
+  if((st.q||'').trim()) bits.push('cari &ldquo;'+esc(st.q.trim())+'&rdquo;');
+  if(COLS.some(c=>(st.f[c.k]||'').trim())) bits.push('filter kolom');
+  el.innerHTML=bits.length?'<span class="fchip">'+bits.join(' &middot; ')+
+    ' <button onclick="clearFilters()" aria-label="hapus filter">&#10005;</button></span>':'';
+}
 function go(d){ ST[TAB].page+=d; render(); }
-function upd(id,k,v){ const e=byId(id); if(!e) return; e[k]=v; if(k==='amount'||k==='status') updateSummary(); }
-function addTop(){ DATA.entries.push({id:tmp(),kind:TAB,status:'expected',item:'',amount:0,category:'',date:'',parent:''});
-  ST[TAB].page=Math.max(1,Math.ceil(visibleTop().length/PAGE_SIZE)); render(); }
+function upd(id,k,v){ const e=byId(id); if(!e) return; e[k]=v;
+  if(k==='amount'||k==='status'){ updateSummary(); if(e.parent) refreshParent(e.parent); } }
+/* redraw just the parent row's status + amount, without touching the field being typed in */
+function refreshParent(pid){
+  const p=byId(pid), tr=document.querySelector('#rows tr[data-id="'+pid+'"]'); if(!p||!tr) return;
+  const ks=kidSum(p), ds=ks>0?derivedStatus(p):p.status;
+  const sel=tr.querySelector('td select'), amt=tr.querySelector('td.amt input');
+  if(sel){ sel.disabled=ks>0;
+    sel.innerHTML='<option value="actual"'+(ds==='actual'?' selected':'')+'>Sudah</option>'+
+      '<option value="expected"'+(ds==='expected'?' selected':'')+'>Rencana</option>'+
+      (ds==='mixed'?'<option value="mixed" selected>Sebagian</option>':''); }
+  if(amt){ amt.disabled=ks>0; if(ks>0) amt.value=ks.toLocaleString('id-ID'); }
+}
+function focusRow(id){
+  setTimeout(function(){
+    const r=document.querySelector('#rows tr[data-id="'+id+'"]'); if(!r) return;
+    const i=r.querySelector('td.ic input'); if(!i) return;
+    i.focus({preventScroll:true}); r.scrollIntoView({block:'nearest',behavior:'smooth'});
+  },0);
+}
+function addTop(){ const id=tmp();
+  DATA.entries.push({id:id,kind:TAB,status:'expected',item:'',amount:0,category:'',date:'',parent:''});
+  FRESH.add(id); ST[TAB].page=1; render(); focusRow(id); }
+/* Enter = "next row at the same level": another sub-item, or another row */
+function rowKey(ev,id){
+  if(ev.key!=='Enter' || ev.isComposing) return;
+  ev.preventDefault();
+  const e=byId(id); if(!e) return;
+  if(e.parent) addSub(e.parent); else addTop();
+}
 function addSub(pid){ const p=byId(pid); if(!p) return;
-  DATA.entries.push({id:tmp(),kind:p.kind,status:p.status,item:'',amount:0,category:p.category||'',date:'',parent:pid});
-  SUBOPEN.add(pid); saveOpen(); render(); }
+  const id=tmp();
+  DATA.entries.push({id:id,kind:p.kind,status:p.status==='mixed'?'expected':p.status,item:'',amount:0,
+                     category:p.category||'',date:p.date||'',parent:pid});
+  SUBOPEN.add(pid); saveOpen(); render(); focusRow(id); }
 function del(id){
   const gone=DATA.entries.filter(e=>e.id===id||e.parent===id); if(!gone.length) return;
   const at=DATA.entries.indexOf(gone[0]), top=gone.find(e=>e.id===id), n=gone.length-1;

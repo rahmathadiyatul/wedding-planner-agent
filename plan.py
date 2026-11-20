@@ -44,14 +44,47 @@ def rupiah(n: int | float) -> str:
     return f"{sign}Rp {abs(n):,}".replace(",", ".")
 
 
+_MULT = (("miliar", 10**9), ("milyar", 10**9), ("juta", 10**6), ("jt", 10**6), ("j", 10**6),
+         ("ribu", 10**3), ("rb", 10**3), ("k", 10**3))
+
+
 def parse_amount(v) -> int:
-    """Accept 5000000, '5.000.000', 'Rp 5juta'-ish -> int. Non-digits dropped."""
+    """'5jt', '1,5 juta', '500rb', '2.5k', 'Rp 1.500.000,00' -> rupiah.
+
+    Mirrors parseAmount() in the web page, so the bot and the page read a
+    number the same way. A lone separator NOT followed by exactly three
+    digits is a decimal point ('1,5jt'); otherwise separators are thousands.
+    """
     if isinstance(v, (int, float)):
         return int(round(v))
-    s = str(v or "")
-    neg = s.strip().startswith("-")
-    digits = "".join(ch for ch in s if ch.isdigit())
-    n = int(digits) if digits else 0
+    s = str(v or "").lower().replace("rp.", "").replace("rp", "")
+    s = "".join(s.split())
+    if not s:
+        return 0
+    neg = s.startswith("-")
+    if neg:
+        s = s[1:]
+    mult = 1
+    for suffix, m in _MULT:
+        if s.endswith(suffix):
+            mult, s = m, s[: -len(suffix)]
+            break
+    s = "".join(ch for ch in s if ch.isdigit() or ch in ".,")
+    try:
+        if "." in s and "," in s:
+            n = float(s.replace(".", "").replace(",", "."))
+        elif "," in s or "." in s:
+            sep = "," if "," in s else "."
+            parts = s.split(sep)
+            if len(parts) == 2 and len(parts[1]) != 3:
+                n = float(parts[0] + "." + parts[1])
+            else:
+                n = float("".join(parts))
+        else:
+            n = float(s) if s else 0.0
+    except ValueError:
+        n = 0.0
+    n = int(round(n * mult))
     return -n if neg else n
 
 
@@ -413,9 +446,20 @@ class PlanStore:
         # nothing is counted twice and no branch is lost.
         tops = [e for e in all_entries if not e.get("parent")]
 
+        def parts(e: dict) -> list:
+            # Once a breakdown carries numbers, each sub-item counts under
+            # its OWN status (DP paid, the rest still planned).
+            kids = children_of(all_entries, e.get("id", ""))
+            if kids and sum(amount_of(all_entries, k) for k in kids):
+                out: list = []
+                for k in kids:
+                    out.extend(parts(k))
+                return out
+            return [(e.get("status"), int(e.get("amount") or 0))]
+
         def tot(kind, status=None):
-            return sum(amount_of(all_entries, e) for e in tops
-                       if e.get("kind") == kind and (status is None or e.get("status") == status))
+            return sum(a for e in tops if e.get("kind") == kind
+                       for st, a in parts(e) if status is None or st == status)
 
         inc_a, inc_e = tot("income", "actual"), tot("income", "expected")
         exp_a, exp_e = tot("expense", "actual"), tot("expense", "expected")
