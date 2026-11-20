@@ -355,6 +355,8 @@ def occurrences(task: dict, c: dict | None = None) -> list[tuple[datetime, str, 
     fires exactly once and a restart never repeats one.
     """
     c = c or conf()
+    if str(task.get("remind") or "").strip().lower() == "off":
+        return []                      # switched off -- applies to ranges too
     start = due_at(task, c)
     if not start:
         return []

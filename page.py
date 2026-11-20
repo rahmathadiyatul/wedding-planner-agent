@@ -373,6 +373,23 @@ _PAGE = r"""<!doctype html>
            background:linear-gradient(180deg,transparent,var(--bg) 38%)}
   .savebar .muted{font-size:12px}
 
+  /* to-do: day sheet + search results */
+  .drow{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:var(--surface);
+        border:1px solid var(--line);border-radius:12px;padding:11px 13px;margin-top:8px;cursor:pointer;
+        font:500 14px var(--sans);color:var(--fg)}
+  .drow:hover{border-color:var(--accent)}
+  .drow .sdot{width:9px;height:9px;border-radius:50%;flex:0 0 9px}
+  .drow .dd{flex:0 0 auto;color:var(--muted);font-size:12px;font-weight:600;min-width:44px}
+  .drow .dt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .drow .dt.done{text-decoration:line-through;color:var(--muted)}
+  .drow .ds{flex:0 0 auto;font-size:11px;font-weight:700;color:var(--muted)}
+  .kres{margin:0 0 16px;background:var(--surface-2);border-radius:var(--r);padding:12px 14px}
+  .kres .drow .dd{min-width:120px}
+  .kres-h{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--muted)}
+  .pill .tm{font-weight:700;margin-right:2px}
+  #nodate.over{outline:2px dashed var(--accent);outline-offset:6px;border-radius:12px}
+  .drw button.primary{width:100%}
+
   /* ledger helpers */
   .cap{font-size:11px;color:var(--muted);text-align:right;padding:0 10px;text-decoration:line-through}
   tr.hit td{background:color-mix(in srgb,var(--gold-soft) 70%,transparent)}
@@ -567,13 +584,14 @@ _PAGE = r"""<!doctype html>
           </div>
           <input id="ksearch" placeholder="cari to-do..." oninput="KQ=this.value;renderBoard()" style="max-width:220px">
         </div>
+        <div class="kres" id="kres" style="display:none"></div>
         <div class="cal" id="cal">
           <div class="calhead" id="calhead"></div>
           <div class="calgrid" id="calgrid"></div>
         </div>
         <div class="nodate">
           <h2 style="margin-bottom:8px">Tanpa tanggal <span class="chip" id="nd-ct"></span></h2>
-          <div class="list" id="nodate"></div>
+          <div class="list" id="nodate" ondragover="ndOver(event)" ondragleave="ndLeave()" ondrop="ndDrop(event)"></div>
           <button class="btn" style="margin-top:8px" onclick="addTask('')">+ to-do tanpa tanggal</button>
         </div>
       </section>
@@ -1006,6 +1024,14 @@ const DAYS=['Sen','Sel','Rab','Kam','Jum','Sab','Min'];
 const MONTHS=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus',
               'September','Oktober','November','Desember'];
 let KQ='', CALMODE='month', CUR=new Date(), SEL=null, EXPDAY={};
+let DAYSEL=null, RETDAY=null;          /* drawer showing a whole day; the day to go back to */
+const NEWT=new Set();                  /* to-dos created this session (dropped if left blank) */
+try{ const m=localStorage.getItem('calmode'); if(m==='week'||m==='month') CALMODE=m; }catch(e){}
+const NARROW = () => matchMedia('(max-width: 760px)').matches;
+const fmtDay = ds => { if(!ds) return ''; const d=new Date(ds+'T00:00');
+  return DAYS[(d.getDay()+6)%7]+', '+d.getDate()+' '+MONTHS[d.getMonth()].slice(0,3)+' '+d.getFullYear(); };
+const daysBetween = (a,b) => Math.round((new Date(b+'T00:00')-new Date(a+'T00:00'))/86400000);
+const addDays = (ds,n) => iso(dayAdd(new Date(ds+'T00:00'), n));
 
 const tById = id => DATA.tasks.find(t=>t.id===id);
 const tKids = id => DATA.tasks.filter(t=>t.parent===id);
@@ -1026,13 +1052,19 @@ const isRange = t => !!(t.due && t.due_end && t.due_end > t.due);
 const rangeDays = t => isRange(t)
   ? Math.round((new Date(t.due_end+'T00:00') - new Date(t.due+'T00:00'))/86400000)+1 : 1;
 const spans = (t,ds) => isRange(t) ? (ds>=t.due && ds<=t.due_end) : (t.due||'')===ds;
-const tasksOn  = ds => topTasks().filter(t=>spans(t,ds));
+/* within a day: open before done, then by time (untimed last), then title */
+function byDay(a,b){
+  const d=(a.status==='done')-(b.status==='done'); if(d) return d;
+  const ta=a.time||'99', tb=b.time||'99'; if(ta!==tb) return ta<tb?-1:1;
+  return (a.title||'').localeCompare(b.title||'');
+}
+const tasksOn  = ds => topTasks().filter(t=>spans(t,ds)).sort(byDay);
 
 function updateKanCount(){
   const open=DATA.tasks.filter(t=>!t.parent&&t.status!=='done').length;
   document.getElementById('kan-ct').textContent=open;
 }
-function setMode(m){ CALMODE=m; renderBoard(); }
+function setMode(m){ CALMODE=m; try{ localStorage.setItem('calmode',m); }catch(e){} renderBoard(); }
 function shift(n){ CUR = CALMODE==='month'
     ? new Date(CUR.getFullYear(), CUR.getMonth()+n, 1)
     : dayAdd(CUR, 7*n);
@@ -1042,20 +1074,31 @@ function today(){ CUR=new Date(); renderBoard(); }
 /* true when the scheduler would mail about this to-do */
 function armed(t){
   if(!MAIL.ready || !t.due || t.status==='done') return false;
-  if(!isRange(t) && (t.remind||'')==='off') return false;
+  if((t.remind||'')==='off') return false;
   return !!((t.remind_to||'').trim() || (MAIL.eff_to||'').trim());
+}
+/* On a phone the month grid shows colour bars, too small to aim at: a tap
+   anywhere in the day opens that day's list instead. */
+function pillTap(ev,id){
+  if(NARROW() && CALMODE==='month' && ev.target.closest('.calgrid')) return;   /* let dayTap handle it */
+  ev.stopPropagation(); openTask(id);
+}
+function dayTap(ev,ds){
+  if(!NARROW() || ev.target.closest('.plus,.more')) return;
+  if(CALMODE==='week' && ev.target.closest('.pill')) return;
+  openDay(ds);
 }
 function pillHtml(t,ds){
   const st=KST[t.status]||KST.todo, ks=tKids(t.id), done=ks.filter(k=>k.status==='done').length;
   const run=isRange(t), cont=run&&ds&&ds!==t.due;
   const day=run&&ds?Math.round((new Date(ds+'T00:00')-new Date(t.due+'T00:00'))/86400000)+1:0;
   return '<button class="pill'+(t.status==='done'?' done':'')+(run?' run':'')+
-    (cont?' cont':'')+'" draggable="'+(cont?'false':'true')+'"'+
+    (cont?' cont':'')+'" draggable="true"'+
     ' style="--c:'+st[1]+'"'+
     ' onmouseenter="tipShow(event,\'' + t.id + '\')" onmouseleave="tipHide()"'+
-    ' ondragstart="dstart(event,\'' + t.id + '\')" ondragend="dend(event)"'+
-    ' onclick="openTask(\'' + t.id + '\')">'+
-    '<span class="pt">'+esc(t.title||'(tanpa judul)')+'</span>'+
+    ' ondragstart="dstart(event,\'' + t.id + '\',\'' + (ds||'') + '\')" ondragend="dend(event)"'+
+    ' onclick="pillTap(event,\'' + t.id + '\')">'+
+    '<span class="pt">'+(t.time?'<b class="tm">'+esc(t.time)+'</b> ':'')+esc(t.title||'(tanpa judul)')+'</span>'+
     (run&&day?'<span class="pc">'+day+'/'+rangeDays(t)+'</span>':'')+
     (armed(t)?'<span class="pc" title="ada pengingat email">&#9993;</span>':'')+
     (ks.length?'<span class="pc">'+done+'/'+ks.length+'</span>':'')+'</button>';
@@ -1065,12 +1108,14 @@ function dayCell(d, outside){
   const cap = CALMODE==='week' ? 99 : (EXPDAY[ds]?99:3);
   const shown=list.slice(0,cap), rest=list.length-shown.length;
   return '<div class="day'+(outside?' out':'')+(isToday?' today':'')+'" id="d-'+ds+'"'+
+    ' onclick="dayTap(event,\'' + ds + '\')"'+
     ' ondragover="dover(event,\'' + ds + '\')" ondragleave="dleave(\'' + ds + '\')"'+
     ' ondrop="drop(event,\'' + ds + '\')">'+
     '<div class="dn">'+d.getDate()+'</div>'+
     '<button class="plus" title="tambah to-do" onclick="addTask(\'' + ds + '\')">+</button>'+
     shown.map(function(t){return pillHtml(t,ds);}).join('')+
-    (rest>0?'<button class="more" onclick="EXPDAY[\'' + ds + '\']=1;renderBoard()">+'+rest+' lagi</button>':'')+
+    (rest>0?'<button class="more" onclick="EXPDAY[\'' + ds + '\']=1;renderBoard()">+'+rest+' lagi</button>':
+     (EXPDAY[ds]&&list.length>3&&CALMODE==='month'?'<button class="more" onclick="delete EXPDAY[\'' + ds + '\'];renderBoard()">sembunyikan</button>':''))+
     '</div>';
 }
 function renderBoard(){
@@ -1098,6 +1143,20 @@ function renderBoard(){
   document.getElementById('calgrid').innerHTML=cells;
   document.getElementById('caltitle').innerHTML=title;
 
+  /* a search covers every date, not just the month on screen */
+  const res=document.getElementById('kres'), q=KQ.trim();
+  if(q){
+    const hits=topTasks().slice().sort(function(a,b){
+      if(!a.due!==!b.due) return a.due?-1:1; return (a.due||'')<(b.due||'')?-1:(a.due||'')>(b.due||'')?1:byDay(a,b); });
+    res.innerHTML='<div class="kres-h">'+hits.length+' hasil untuk &ldquo;'+esc(q)+'&rdquo; di semua tanggal'+
+      ' <button class="btn" onclick="KQ=\'\';document.getElementById(\'ksearch\').value=\'\';renderBoard()">hapus</button></div>'+
+      hits.map(function(t){ const st=KST[t.status]||KST.todo;
+        return '<button class="drow" onclick="jumpTo(\''+t.id+'\')"><span class="sdot" style="background:'+st[1]+'"></span>'+
+          '<span class="dd">'+(t.due?esc(fmtDay(t.due)):'tanpa tanggal')+'</span>'+
+          '<span class="dt">'+esc(t.title||'(tanpa judul)')+'</span><span class="ds">'+st[0]+'</span></button>'; }).join('');
+    res.style.display='';
+  } else { res.innerHTML=''; res.style.display='none'; }
+
   const nd=topTasks().filter(t=>!t.due);
   document.getElementById('nodate').innerHTML = nd.map(pillHtml).join('') ||
     '<span class="muted">semua to-do sudah punya tanggal.</span>';
@@ -1108,6 +1167,7 @@ function renderBoard(){
 /* ---- hover tooltip ---- */
 let TIPT=null;
 function tipShow(ev,id){
+  if(!matchMedia('(hover: hover)').matches) return;     /* phones: a tap opens the card instead */
   const t=tById(id); if(!t) return;
   clearTimeout(TIPT);
   const el=document.getElementById('tip');
@@ -1142,11 +1202,7 @@ function tipPlace(anchor){
 }
 function tipHide(){ clearTimeout(TIPT);
   TIPT=setTimeout(function(){ document.getElementById('tip').classList.remove('on'); },60); }
-function fmtDay(ds){
-  if(!ds) return '';
-  const d=new Date(ds+'T00:00');
-  return DAYS[(d.getDay()+6)%7]+', '+d.getDate()+' '+MONTHS[d.getMonth()].slice(0,3)+' '+d.getFullYear();
-}
+
 function remindSummary(t){
   if(isRange(t)) return 'tiap hari jam '+(t.time||MAIL.eff_time||'09:00');
   const lead=t.remind||MAIL.eff_lead;
@@ -1156,15 +1212,41 @@ function remindSummary(t){
 addEventListener('scroll',function(){ document.getElementById('tip').classList.remove('on'); },true);
 
 /* ---- detail drawer ---- */
-function openTask(id){ SEL=id; tipHide(); renderDrw();
-  document.getElementById('ov').classList.add('on');
+function showDrw(){ document.getElementById('ov').classList.add('on');
   document.getElementById('drw').classList.add('on'); }
-function closeDrw(){ SEL=null;
+function openTask(id){ tipHide(); if(DAYSEL){ RETDAY=DAYSEL; DAYSEL=null; }
+  SEL=id; renderDrw(); showDrw(); }
+function openDay(ds){ tipHide(); dropIfBlank(SEL); SEL=null; RETDAY=null; DAYSEL=ds; renderDrw(); showDrw(); }
+function jumpTo(id){ const t=tById(id); if(t&&t.due){ CUR=new Date(t.due+'T00:00'); renderBoard(); } openTask(id); }
+/* a to-do created here and closed without a title was never meant to exist */
+function dropIfBlank(id){
+  const t=id&&tById(id);
+  if(t && NEWT.has(id) && !(t.title||'').trim() && !tKids(id).length)
+    DATA.tasks=DATA.tasks.filter(x=>x!==t);
+}
+function backToDay(){ dropIfBlank(SEL); SEL=null; DAYSEL=RETDAY; RETDAY=null; renderDrw(); renderBoard(); }
+function closeDrw(){ dropIfBlank(SEL); SEL=null; DAYSEL=null; RETDAY=null;
   document.getElementById('ov').classList.remove('on');
   document.getElementById('drw').classList.remove('on');
   renderBoard(); }
+addEventListener('keydown',function(e){
+  if(e.key==='Escape' && document.getElementById('drw').classList.contains('on')) closeDrw(); });
+function renderDay(el){
+  const ds=DAYSEL, list=tasksOn(ds);
+  el.innerHTML='<h3>'+esc(fmtDay(ds))+' <button class="btn x" onclick="closeDrw()" aria-label="tutup">&#10005;</button></h3>'+
+    (list.length?list.map(function(t){ const st=KST[t.status]||KST.todo, ks=tKids(t.id);
+      return '<button class="drow" onclick="openTask(\''+t.id+'\')"><span class="sdot" style="background:'+st[1]+'"></span>'+
+        '<span class="dd">'+(t.time?esc(t.time):'&mdash;')+'</span>'+
+        '<span class="dt'+(t.status==='done'?' done':'')+'">'+esc(t.title||'(tanpa judul)')+'</span>'+
+        '<span class="ds">'+(isRange(t)?'hari '+(daysBetween(t.due,ds)+1)+'/'+rangeDays(t):
+          (ks.length?ks.filter(k=>k.status==='done').length+'/'+ks.length:st[0]))+'</span></button>'; }).join('')
+      :'<div class="empty" style="padding:20px 0">Belum ada to-do di tanggal ini.</div>')+
+    '<button class="primary" style="margin-top:14px" onclick="addTask(\''+ds+'\')">+ Tambah to-do di tanggal ini</button>';
+}
 function renderDrw(){
-  const c=SEL?tById(SEL):null; const el=document.getElementById('drw');
+  const el=document.getElementById('drw');
+  if(!SEL && DAYSEL){ renderDay(el); return; }
+  const c=SEL?tById(SEL):null;
   if(!c){ el.innerHTML=''; return; }
   const ks=tKids(c.id), done=ks.filter(k=>k.status==='done').length;
   const sts=KORDER.map(function(k){ const st=KST[k];
@@ -1176,26 +1258,36 @@ function renderDrw(){
     return '<div class="ck'+(k.status==='done'?' done':'')+'">'+
       '<input type="checkbox" '+(k.status==='done'?'checked':'')+
         ' onchange="tgl(\'' + k.id + '\',this.checked)">'+
-      '<input class="cx" value="'+esc(k.title)+'" oninput="tupd(\'' + k.id + '\',\'title\',this.value)">'+
+      '<input class="cx" data-id="'+k.id+'" value="'+esc(k.title)+'" placeholder="tulis langkahnya..." '+
+        'oninput="tupd(\'' + k.id + '\',\'title\',this.value)" '+
+        'onkeydown="if(event.key===\'Enter\'&&!event.isComposing){event.preventDefault();addCk(\'' + c.id + '\');}">'+
       '<button class="btn del" onclick="tdel(\'' + k.id + '\')">&#10005;</button></div>'; }).join('');
   el.innerHTML=
-    '<h3>Rincian to-do <button class="btn x" onclick="closeDrw()">&#10005;</button></h3>'+
+    '<h3>'+(RETDAY?'<button class="btn x" style="margin:0" onclick="backToDay()" aria-label="kembali">&lsaquo;</button> ':'')+
+      'Rincian to-do <button class="btn x" onclick="closeDrw()" aria-label="tutup">&#10005;</button></h3>'+
     '<label>Judul</label>'+
     '<input value="'+esc(c.title)+'" placeholder="mis. Cari venue" oninput="tupd(\'' + c.id + '\',\'title\',this.value)">'+
     '<label>Status</label><div class="stsel">'+sts+'</div>'+
-    '<label>Tanggal</label>'+
+    '<label>Tanggal'+(isRange(c)?' <span class="chip">'+rangeDays(c)+' hari</span>':'')+'</label>'+
     '<div class="trow" style="margin:0">'+
       '<input style="flex:1;min-width:130px" type="date" value="'+esc(c.due)+'" '+
-        'onchange="setDue(\'' + c.id + '\',this.value)" title="mulai">'+
+        'onchange="setDue(\'' + c.id + '\',this.value)" aria-label="tanggal mulai">'+
       '<span class="muted" style="align-self:center;font-size:12px">s/d</span>'+
       '<input style="flex:1;min-width:130px" type="date" value="'+esc(c.due_end||'')+'" '+
-        'onchange="setEnd(\'' + c.id + '\',this.value)" title="kosong = satu hari saja">'+
+        (c.due?'min="'+esc(addDays(c.due,1))+'" ':'disabled ')+
+        'onchange="setEnd(\'' + c.id + '\',this.value)" aria-label="tanggal selesai (opsional)">'+
     '</div>'+
-    '<div class="muted sm">isi tanggal kedua kalau to-do-nya berjalan beberapa hari '+
-      '&mdash; pengingatnya dikirim tiap hari</div>'+
-    '<label>Jam</label>'+
+    (c.due?'<div class="trow">'+
+      '<button class="btn" onclick="shiftTask(\'' + c.id + '\',-1)">&minus;1 hari</button>'+
+      '<button class="btn" onclick="shiftTask(\'' + c.id + '\',1)">+1 hari</button>'+
+      '<button class="btn" onclick="shiftTask(\'' + c.id + '\',7)">+1 minggu</button>'+
+      '<button class="btn" onclick="clearDates(\'' + c.id + '\')">tanpa tanggal</button></div>':'')+
+    '<div class="muted sm">isi tanggal kedua kalau to-do-nya berjalan beberapa hari</div>'+
+    '<label>'+(isRange(c)?'Jam pengingat harian':'Jam acara')+'</label>'+
     '<input type="time" value="'+esc(c.time)+'" oninput="setTime(\'' + c.id + '\',this.value)" '+
       'title="kosong = jam '+esc(MAIL.eff_time||'09:00')+'">'+
+    '<div class="muted sm">'+(isRange(c)?'email dikirim tiap hari di jam ini':
+      'kosong = dianggap jam '+esc(MAIL.eff_time||'09:00'))+'</div>'+
     remindHtml(c)+
     '<label>Kategori</label>'+
     '<input value="'+esc(c.category)+'" placeholder="mis. akad" oninput="tupd(\'' + c.id + '\',\'category\',this.value)">'+
@@ -1239,10 +1331,13 @@ function remindHtml(c){
   }).join('') || '<span class="muted" style="font-size:12px">daftar penerima masih kosong &mdash; '+
                  'isi di <a href="#" onclick="setView(\'set\');return false">Settings</a></span>';
   if(isRange(c)){
-    const n=rangeDays(c);
+    const n=rangeDays(c), on=(c.remind||'')!=='off';
     return '<label>Pengingat email</label>'+
-      '<div class="banner ok" style="font-size:12px">&#9993; Tiap hari jam '+
-        esc(c.time||MAIL.eff_time||'09:00')+', '+n+' hari ('+esc(c.due)+' &rarr; '+esc(c.due_end)+')</div>'+
+      '<label class="who" style="width:max-content"><input type="checkbox" '+(on?'checked':'')+
+        ' onchange="setRemind(\''+c.id+'\',this.checked?\'\':\'off\')"> Kirim pengingat harian</label>'+
+      (on?'<div class="banner ok" style="font-size:12px;margin:6px 0 0">&#9993; Tiap hari jam '+
+        esc(c.time||MAIL.eff_time||'09:00')+', '+n+' hari ('+esc(fmtDay(c.due))+' &rarr; '+esc(fmtDay(c.due_end))+')</div>'
+        :'<div class="muted sm">pengingat harian dimatikan</div>')+
       '<div class="whos">'+who+'</div>'+
       (to.length?'':'<div class="muted sm">belum dipilih &rarr; pakai default ('+
         esc(MAIL.eff_to||'belum diatur')+')</div>');
@@ -1265,16 +1360,30 @@ function setWho(id,name,on){
   t.remind_to=cur.join(','); renderDrw();
 }
 function setStatus(id,v){ tupd(id,'status',v); renderDrw(); renderBoard(); }
-function setDue(id,v){ tupd(id,'due',v); renderDrw(); renderBoard(); }
-function setEnd(id,v){ tupd(id,'due_end',v); renderDrw(); renderBoard(); }
+/* Moving the start moves a range's end with it, so the run keeps its length.
+   Clearing the start clears the end, so an old range can't come back later. */
+function setDue(id,v){ const t=tById(id); if(!t) return;
+  if(!v){ t.due=''; t.due_end=''; }
+  else { if(isRange(t)) t.due_end=addDays(t.due_end, daysBetween(t.due, v)); t.due=v; }
+  renderDrw(); renderBoard(); }
+function setEnd(id,v){ const t=tById(id); if(!t) return;
+  if(v && (!t.due || v<=t.due)){ toast('Tanggal selesai harus setelah tanggal mulai'); renderDrw(); return; }
+  t.due_end=v; renderDrw(); renderBoard(); }
+function shiftTask(id,n){ const t=tById(id); if(!t||!t.due) return;
+  t.due=addDays(t.due,n); if(t.due_end) t.due_end=addDays(t.due_end,n);
+  if(NARROW()||CALMODE==='week') CUR=new Date(t.due+'T00:00');
+  renderDrw(); renderBoard();
+  toast('Dipindah ke '+fmtDay(t.due)); }
+function clearDates(id){ const t=tById(id); if(!t) return; t.due=''; t.due_end=''; renderDrw(); renderBoard(); }
 function tgl(id,on){ const t=tById(id); if(!t) return; t.status=on?'done':'todo'; renderDrw(); renderBoard(); }
-function addTask(due){ const id=tmp();
+function addTask(due){ const id=tmp(); NEWT.add(id);
   DATA.tasks.push({id:id,title:'',detail:'',status:'todo',category:'',due:due||'',parent:''});
   renderBoard(); openTask(id);
   const el=document.querySelector('#drw input'); if(el) el.focus(); }
-function addCk(pid){ const p=tById(pid); if(!p) return;
-  DATA.tasks.push({id:tmp(),title:'',detail:'',status:'todo',category:'',due:'',parent:pid});
-  renderDrw(); renderBoard(); }
+function addCk(pid){ const p=tById(pid); if(!p) return; const id=tmp();
+  DATA.tasks.push({id:id,title:'',detail:'',status:'todo',category:'',due:'',parent:pid});
+  renderDrw(); renderBoard();
+  const el=document.querySelector('#drw .cx[data-id="'+id+'"]'); if(el) el.focus(); }
 function tdel(id){
   const gone=DATA.tasks.filter(t=>t.id===id||t.parent===id); if(!gone.length) return;
   const at=DATA.tasks.indexOf(gone[0]), top=gone.find(t=>t.id===id), n=gone.length-1;
@@ -1284,8 +1393,8 @@ function tdel(id){
 }
 
 /* ---- drag a pill onto another day to reschedule ---- */
-let DRAG=null;
-function dstart(ev,id){ DRAG=id; tipHide(); ev.dataTransfer.effectAllowed='move';
+let DRAG=null, DRAGFROM='';
+function dstart(ev,id,from){ DRAG=id; DRAGFROM=from||''; tipHide(); ev.dataTransfer.effectAllowed='move';
   try{ev.dataTransfer.setData('text/plain',id);}catch(e){} }
 function dend(ev){ DRAG=null; }
 function dover(ev,ds){ ev.preventDefault(); const c=document.getElementById('d-'+ds); if(c)c.classList.add('over'); }
@@ -1294,13 +1403,17 @@ function drop(ev,ds){ ev.preventDefault();
   const id=DRAG||(ev.dataTransfer?ev.dataTransfer.getData('text/plain'):'');
   const t=id?tById(id):null;
   if(t){
-    if(isRange(t)){                       /* move the whole run, keep its length */
-      const shift=Math.round((new Date(ds+'T00:00')-new Date(t.due+'T00:00'))/86400000);
-      const e=new Date(t.due_end+'T00:00'); e.setDate(e.getDate()+shift);
-      t.due=ds; t.due_end=iso(e);
-    } else t.due=ds;
+    /* grabbing day 3 of a run and dropping it moves the run by that offset */
+    const from=(isRange(t)&&DRAGFROM)?DRAGFROM:(t.due||ds), n=daysBetween(from, ds);
+    if(t.due){ t.due=addDays(t.due,n); if(t.due_end) t.due_end=addDays(t.due_end,n); }
+    else t.due=ds;
   }
-  DRAG=null; renderBoard(); }
+  DRAG=null; DRAGFROM=''; renderBoard(); }
+/* dropping on "Tanpa tanggal" takes the date off */
+function ndOver(ev){ ev.preventDefault(); document.getElementById('nodate').classList.add('over'); }
+function ndLeave(){ document.getElementById('nodate').classList.remove('over'); }
+function ndDrop(ev){ ev.preventDefault(); ndLeave();
+  const t=DRAG?tById(DRAG):null; if(t){ t.due=''; t.due_end=''; } DRAG=null; renderBoard(); }
 
 /* ================= SETTINGS =================
    MAIL holds what the server merged from plan.json + .env. Edits go straight

@@ -424,6 +424,8 @@ def _remind_note(t: dict) -> str:
     if not who:
         return " -- tidak ada penerima email, jadi tidak ada pengingat"
     names = ", ".join(n for n, _ in who)
+    if str(t.get("remind") or "").strip().lower() == "off":
+        return " -- pengingat dimatikan"
     end = mailer.end_at(t, c)
     if end:
         occ = mailer.occurrences(t, c)
