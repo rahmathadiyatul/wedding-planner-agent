@@ -148,11 +148,12 @@ _PAGE = r"""<!doctype html>
   .seg button{background:transparent;border:0;color:var(--muted);padding:6px 13px;font-size:12px;cursor:pointer}
   .seg button.on{background:var(--accent);color:#fff}
   .cal{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#12161d}
-  .calhead{display:grid;grid-template-columns:repeat(7,1fr);background:#0f1319}
+  .calhead{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));background:#0f1319}
   .calhead div{padding:8px 6px;font-size:12px;color:var(--muted);font-weight:600;text-align:center}
-  .calgrid{display:grid;grid-template-columns:repeat(7,1fr)}
+  .calgrid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
   .day{border-top:1px solid var(--line);border-left:1px solid var(--line);min-height:108px;
-       padding:6px;display:flex;flex-direction:column;gap:4px;position:relative}
+       padding:6px;display:flex;flex-direction:column;gap:4px;position:relative;
+       min-width:0;overflow:hidden}
   .day:nth-child(7n+1){border-left:0}
   .day.out{background:#0e1116}
   .day.out .dn{opacity:.4}
@@ -166,16 +167,17 @@ _PAGE = r"""<!doctype html>
   .day .plus:hover{color:var(--fg)}
   .pill{display:flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--line);
         border-left:3px solid var(--muted);border-radius:6px;padding:4px 6px;font-size:12px;
-        cursor:pointer;text-align:left;width:100%;color:var(--fg)}
+        cursor:pointer;text-align:left;width:100%;max-width:100%;color:var(--fg);min-width:0}
   .pill:hover{border-color:var(--accent)}
-  .pill .pt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pill .pt{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .pill .pc{font-size:10px;color:var(--muted);flex:0 0 auto}
   .pill.done .pt{text-decoration:line-through;color:var(--muted)}
   .pill.run{background:#141c2b}
   .pill.cont{opacity:.72}
   .pill.cont .pt{font-weight:400}
   .cal.week .day{min-height:300px}
-  .more{font-size:11px;color:var(--muted);background:transparent;border:0;cursor:pointer;text-align:left;padding:1px 2px}
+  .more{font-size:11px;color:var(--muted);background:transparent;border:0;cursor:pointer;
+        text-align:left;padding:1px 2px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .nodate{margin-top:16px}
   .nodate .list{display:flex;flex-wrap:wrap;gap:8px}
   .nodate .pill{width:auto;max-width:280px}
