@@ -25,6 +25,11 @@ import uuid
 KINDS = ("income", "expense")
 STATUSES = ("actual", "expected")
 
+# Kanban columns for the to-do board. A task with a parent is a checklist item
+# inside its parent's card rather than a card of its own.
+TASK_STATES = ("todo", "doing", "done")
+TASK_LABELS = {"todo": "Rencana", "doing": "Proses", "done": "Selesai"}
+
 
 # ---------------------------------------------------------------- formatting
 
@@ -76,6 +81,7 @@ class PlanStore:
             data = {}
         data.setdefault("entries", [])
         data.setdefault("notes", "")
+        data.setdefault("tasks", [])
         return data
 
     def _write_locked(self, data: dict) -> None:
@@ -170,6 +176,120 @@ class PlanStore:
                 self._write_locked(data)
                 return True
         return False
+
+    # ---------------------------------------------------------- tasks (kanban)
+
+    def replace_tasks(self, tasks: list) -> None:
+        """Full save from the board."""
+        with self._lock:
+            data = self._read_locked()
+            cleaned, idmap = [], {}
+            for t in tasks:
+                c = _clean_task(t)
+                if not c["title"]:
+                    continue
+                old = str(t.get("id") or "")
+                if not old or old.startswith("tmp-"):
+                    c["id"] = uuid.uuid4().hex[:8]
+                    if old:
+                        idmap[old] = c["id"]
+                cleaned.append(c)
+            ids = {c["id"] for c in cleaned}
+            for c in cleaned:
+                p = c.get("parent") or ""
+                if p in idmap:
+                    c["parent"] = idmap[p]
+                if c.get("parent") and (c["parent"] not in ids or c["parent"] == c["id"]):
+                    c["parent"] = ""
+            data["tasks"] = cleaned
+            self._write_locked(data)
+
+    def task_add(self, title: str, detail: str = "", status: str = "todo",
+                 category: str = "", due: str = "", parent: str = "") -> dict:
+        with self._lock:
+            data = self._read_locked()
+            pid = _resolve_task(data["tasks"], parent)
+            t = _clean_task({"id": uuid.uuid4().hex[:8], "title": title, "detail": detail,
+                             "status": status, "category": category, "due": due, "parent": pid})
+            data["tasks"].append(t)
+            self._write_locked(data)
+        return t
+
+    def task_add_many(self, items: list, status: str = "todo", category: str = "",
+                      parent: str = "") -> list[dict]:
+        """Add a batch of tasks (optionally all as checklist items of one card)."""
+        out = []
+        with self._lock:
+            data = self._read_locked()
+            pid = _resolve_task(data["tasks"], parent)
+            for it in items or []:
+                raw = {"title": it, "status": status} if isinstance(it, str) else dict(it)
+                raw.setdefault("status", status)
+                raw.setdefault("category", category)
+                raw["parent"] = pid
+                raw["id"] = uuid.uuid4().hex[:8]
+                t = _clean_task(raw)
+                if not t["title"]:
+                    continue
+                data["tasks"].append(t)
+                out.append(t)
+            self._write_locked(data)
+        return out
+
+    def task_update(self, task_id: str, **fields) -> dict | None:
+        with self._lock:
+            data = self._read_locked()
+            tid = _resolve_task(data["tasks"], task_id)
+            for t in data["tasks"]:
+                if t.get("id") == tid:
+                    t.update({k: v for k, v in fields.items() if v is not None and v != ""})
+                    t.update(_clean_task(t))
+                    self._write_locked(data)
+                    return t
+        return None
+
+    def task_delete(self, task_id: str) -> bool:
+        """Delete a task and any checklist items under it."""
+        with self._lock:
+            data = self._read_locked()
+            tid = _resolve_task(data["tasks"], task_id)
+            before = len(data["tasks"])
+            data["tasks"] = [t for t in data["tasks"]
+                             if t.get("id") != tid and t.get("parent") != tid]
+            if len(data["tasks"]) != before:
+                self._write_locked(data)
+                return True
+        return False
+
+    def tasks_text(self, status: str = "") -> str:
+        """Board as text, grouped by column, with checklist progress per card."""
+        tasks = self.read()["tasks"]
+        if not tasks:
+            return "(belum ada to-do)"
+        want = [status] if status in TASK_STATES else list(TASK_STATES)
+        out: list[str] = []
+        for st in want:
+            cards = [t for t in tasks if not t.get("parent") and t.get("status") == st]
+            out.append(f"== {TASK_LABELS[st]} ({len(cards)}) ==")
+            if not cards:
+                out.append("  (kosong)")
+            for c in cards:
+                kids = [k for k in tasks if k.get("parent") == c["id"]]
+                done = sum(1 for k in kids if k.get("status") == "done")
+                bits = [f"[{c['id']}] {c['title']}"]
+                if kids:
+                    bits.append(f"({done}/{len(kids)})")
+                if c.get("due"):
+                    bits.append(f"due {c['due']}")
+                if c.get("category"):
+                    bits.append(f"#{c['category']}")
+                out.append("  " + " ".join(bits))
+                if c.get("detail"):
+                    out.append(f"    {c['detail'][:120]}")
+                for k in kids:
+                    mark = "x" if k.get("status") == "done" else " "
+                    out.append(f"    [{mark}] [{k['id']}] {k['title']}")
+        return "\n".join(out)
 
     def _resolved(self, parent: str) -> str:
         """The id an item name/id resolves to, or '' if there's no such entry."""
@@ -269,6 +389,37 @@ def _clean(e: dict) -> dict:
     }
 
 
+def _clean_task(t: dict) -> dict:
+    status = str(t.get("status") or "todo").lower()
+    return {
+        "id": t.get("id") or uuid.uuid4().hex[:8],
+        "title": str(t.get("title") or "").strip(),
+        "detail": str(t.get("detail") or "").strip(),
+        "status": status if status in TASK_STATES else "todo",
+        "category": str(t.get("category") or "").strip(),
+        "due": str(t.get("due") or "").strip(),
+        "parent": str(t.get("parent") or "").strip(),
+    }
+
+
+def _resolve_task(tasks: list[dict], ref: str) -> str:
+    """Accept a task id or (part of) its title -- the bot usually has the title."""
+    r = (ref or "").strip()
+    if not r:
+        return ""
+    for t in tasks:
+        if t.get("id") == r:
+            return r
+    low = r.lower()
+    for t in tasks:
+        if t.get("title", "").strip().lower() == low:
+            return t.get("id", "")
+    for t in tasks:
+        if low in t.get("title", "").strip().lower():
+            return t.get("id", "")
+    return ""
+
+
 def children_of(entries: list[dict], pid: str) -> list[dict]:
     return [e for e in entries if e.get("parent") == pid]
 
@@ -333,5 +484,6 @@ def _now() -> str:
 def render_page(token: str, store: PlanStore) -> str:
     import page
     data = store.read()
-    return page.render(token, store.title, data["entries"], data.get("notes", ""))
+    return page.render(token, store.title, data["entries"],
+                       data.get("notes", ""), data.get("tasks", []))
 

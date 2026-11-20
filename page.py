@@ -1,12 +1,16 @@
 """The shared plan's web page.
 
 Kept apart from plan.py so the storage logic stays readable. The page is a
-small client-side app: it holds the whole plan in memory, renders one page of
-one tab at a time, and POSTs everything back on save.
+small client-side app holding the whole plan in memory; one Save posts
+everything back.
 
-Sub-items live in the same flat list via `parent`; sorting/filtering/paging
-apply to top-level rows only and children always travel with their parent, so
-a breakdown never gets split across pages.
+Two views behind a sidebar:
+  Keuangan - income/expense ledger, tabbed by kind, sortable/filterable/paged.
+             Sub-items nest under a parent whose amount is their sum.
+  To-do    - a kanban board. A task with a parent is a checklist item inside
+             its parent's card rather than a card of its own.
+
+On phones the sidebar becomes a top nav and tables become stacked cards.
 """
 from __future__ import annotations
 
@@ -14,8 +18,9 @@ import html
 import json
 
 
-def render(token: str, title: str, entries: list, notes: str) -> str:
-    payload = json.dumps({"entries": entries, "notes": notes}, ensure_ascii=False)
+def render(token: str, title: str, entries: list, notes: str, tasks: list) -> str:
+    payload = json.dumps({"entries": entries, "notes": notes, "tasks": tasks},
+                         ensure_ascii=False)
     return (_PAGE
             .replace("__TITLE__", html.escape(title))
             .replace("__TOKEN__", html.escape(token))
@@ -29,14 +34,32 @@ _PAGE = r"""<!doctype html>
 <title>__TITLE__</title>
 <style>
   :root{ color-scheme: dark; --bg:#0f1115; --card:#161a21; --line:#262c36; --fg:#e8eaed;
-         --muted:#949cab; --in:#39d98a; --out:#ff6b6b; --accent:#2f6df6; }
+         --muted:#949cab; --in:#39d98a; --out:#ff6b6b; --accent:#2f6df6; --warn:#f5a524; }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);
        font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-  header{padding:14px 16px;background:var(--card);border-bottom:1px solid var(--line);
-         position:sticky;top:0;z-index:20;display:flex;justify-content:space-between;align-items:center;gap:10px}
-  header h1{font-size:17px;margin:0}
-  .wrap{max-width:1100px;margin:0 auto;padding:16px}
+  .app{display:flex;min-height:100vh}
+
+  /* sidebar */
+  .side{width:212px;flex:0 0 212px;background:var(--card);border-right:1px solid var(--line);
+        display:flex;flex-direction:column;gap:4px;padding:16px 12px;position:sticky;top:0;height:100vh}
+  .brand{font-size:16px;font-weight:700;padding:4px 8px 14px}
+  .nav{display:flex;align-items:center;gap:10px;background:transparent;border:0;color:var(--muted);
+       padding:10px 12px;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;text-align:left;width:100%}
+  .nav:hover{background:#1b212b;color:var(--fg)}
+  .nav.on{background:#17233d;color:#fff}
+  .nav .ic{font-size:15px}
+  .nav .ct{margin-left:auto;font-size:11px;color:var(--muted);background:#0b0d11;
+           border:1px solid var(--line);border-radius:999px;padding:1px 7px}
+  .sidefoot{margin-top:auto;color:var(--muted);font-size:12px;padding:8px}
+
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .wrap{padding:18px;max-width:1240px;width:100%;margin:0 auto;flex:1}
+  .view{display:none} .view.on{display:block}
+  h2{font-size:15px;margin:22px 0 8px}
+  .muted{color:var(--muted);font-size:13px}
+
+  /* finance */
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px}
   .card .l{font-size:12px;color:var(--muted);margin-bottom:6px}
@@ -62,6 +85,11 @@ _PAGE = r"""<!doctype html>
   td.amt input:disabled{background:#11151b;color:var(--muted);font-weight:700}
   tr.sub td:nth-child(2){padding-left:24px}
   tr.sub .tw{color:var(--muted)}
+  .pg{display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:10px;flex-wrap:wrap}
+  .empty{padding:26px;text-align:center;color:var(--muted)}
+  .mctl{display:none;gap:8px;margin-bottom:10px}
+  .mctl input{flex:1} .mctl select{width:auto}
+
   .btn{background:transparent;border:1px solid var(--line);color:var(--fg);border-radius:8px;
        padding:5px 9px;font-size:12px;cursor:pointer;white-space:nowrap}
   .btn:hover{border-color:var(--accent)}
@@ -70,84 +98,148 @@ _PAGE = r"""<!doctype html>
   .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
   button.primary{background:var(--accent);color:#fff;border:0;padding:11px 18px;border-radius:10px;
        font-size:15px;font-weight:600;cursor:pointer}
-  .muted{color:var(--muted);font-size:13px}
-  h2{font-size:15px;margin:22px 0 8px}
-  textarea{min-height:130px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
+  textarea{min-height:120px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
   .ok{color:var(--in);font-size:14px}
-  .pg{display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:10px;flex-wrap:wrap}
-  .empty{padding:26px;text-align:center;color:var(--muted)}
-  .mctl{display:none;gap:8px;margin-bottom:10px}
-  .mctl input{flex:1} .mctl select{width:auto}
 
-  /* Phones: the table becomes stacked cards, with a search + sort bar standing
-     in for the column headers and per-column filters. */
+  /* kanban */
+  .board{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-items:start}
+  .col{background:#12161d;border:1px solid var(--line);border-radius:12px;display:flex;
+       flex-direction:column;min-height:160px}
+  .col.over{border-color:var(--accent);background:#141c2b}
+  .colhead{display:flex;align-items:center;gap:8px;padding:11px 12px;border-bottom:1px solid var(--line)}
+  .colhead .dot{width:8px;height:8px;border-radius:50%}
+  .colhead .n{font-weight:700;font-size:14px}
+  .colhead .c{margin-left:auto;color:var(--muted);font-size:12px}
+  .collist{padding:10px;display:flex;flex-direction:column;gap:10px}
+  .tcard{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;cursor:grab}
+  .tcard.drag{opacity:.45}
+  .tcard .th{display:flex;align-items:flex-start;gap:8px}
+  .tcard .tt{flex:1;font-size:14px;font-weight:600;line-height:1.35;word-break:break-word}
+  .tcard .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;align-items:center}
+  .chip{font-size:11px;color:var(--muted);background:#0b0d11;border:1px solid var(--line);
+        border-radius:999px;padding:2px 8px}
+  .chip.due{color:var(--warn);border-color:#3a3220}
+  .chip.pr{color:var(--in);border-color:#20392c}
+  .tbody{margin-top:9px;border-top:1px solid var(--line);padding-top:9px;display:none}
+  .tcard.open .tbody{display:block}
+  .ck{display:flex;align-items:center;gap:8px;padding:3px 0}
+  .ck input[type=checkbox]{width:16px;height:16px;flex:0 0 16px;accent-color:var(--accent)}
+  .ck .cx{flex:1;font-size:13px;background:transparent;border:0;padding:2px;color:var(--fg)}
+  .ck.done .cx{text-decoration:line-through;color:var(--muted)}
+  .ck .btn{padding:2px 6px}
+  .trow{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  .trow .btn{flex:0 0 auto}
+  .addcard{margin:0 10px 10px;border:1px dashed var(--line);color:var(--muted);background:transparent;
+           border-radius:10px;padding:9px;cursor:pointer;font-size:13px}
+  .addcard:hover{border-color:var(--accent);color:var(--fg)}
+
+  /* save bar */
+  .savebar{position:sticky;bottom:0;background:linear-gradient(180deg,rgba(15,17,21,0),var(--bg) 40%);
+           padding:14px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+
+  @media (max-width: 900px){ .board{grid-template-columns:1fr} }
   @media (max-width: 760px){
+    .app{flex-direction:column}
+    .side{width:auto;flex:none;height:auto;position:sticky;top:0;z-index:20;
+          flex-direction:row;align-items:center;gap:6px;padding:10px;overflow-x:auto}
+    .brand{padding:0 8px 0 4px;font-size:15px;white-space:nowrap}
+    .nav{width:auto;padding:8px 12px;white-space:nowrap}
+    .sidefoot{display:none}
     .wrap{padding:12px}
-    .cards{grid-template-columns:repeat(2,1fr)}
-    .card .v{font-size:16px}
-    .big{grid-column:span 2}
+    .cards{grid-template-columns:repeat(2,1fr)} .card .v{font-size:16px} .big{grid-column:span 2}
     .mctl{display:flex}
-    .tablewrap{overflow-x:visible}
-    table{min-width:0}
-    thead{display:none}
+    .tablewrap{overflow-x:visible} table{min-width:0} thead{display:none}
     tbody tr{display:block;padding:10px 10px 12px;border-bottom:1px solid var(--line)}
     tbody td{display:flex;align-items:center;gap:10px;border:0;padding:3px 0}
-    tbody td::before{content:attr(data-l);color:var(--muted);font-size:12px;
-                     min-width:76px;flex:0 0 76px}
+    tbody td::before{content:attr(data-l);color:var(--muted);font-size:12px;min-width:76px;flex:0 0 76px}
     tbody td.act{justify-content:flex-end;gap:8px;padding-top:8px}
     tbody td.act::before{content:''}
     tr.sub{border-left:2px solid var(--accent);background:#12161d}
     tr.sub td:nth-child(2){padding-left:0}
     td.amt input{text-align:left}
+    .tcard{cursor:default}
   }
 </style></head>
 <body>
-<header><h1>&#128141; __TITLE__</h1><span class="muted">bersama &middot; @bang</span></header>
-<div class="wrap">
-  <div class="cards" id="cards"></div>
+<div class="app">
+  <aside class="side">
+    <div class="brand">&#128141; __TITLE__</div>
+    <button class="nav on" id="nav-fin" onclick="setView('fin')"><span class="ic">&#128176;</span> Keuangan</button>
+    <button class="nav" id="nav-kan" onclick="setView('kan')"><span class="ic">&#9745;</span> To-do <span class="ct" id="kan-ct">0</span></button>
+    <div class="sidefoot">bersama &middot; @bang</div>
+  </aside>
 
-  <div class="tabs">
-    <button class="tab" id="tab-income"  onclick="setTab('income')">Pemasukan</button>
-    <button class="tab" id="tab-expense" onclick="setTab('expense')">Pengeluaran</button>
-  </div>
+  <main class="main">
+    <div class="wrap">
 
-  <div class="mctl">
-    <input id="msearch" placeholder="cari item, kategori, nominal..." oninput="setSearch(this.value)">
-    <select id="msort" onchange="setSortSel(this.value)"></select>
-  </div>
+      <!-- ============== KEUANGAN ============== -->
+      <section id="v-fin" class="view on">
+        <div class="cards" id="cards"></div>
+        <div class="tabs">
+          <button class="tab" id="tab-income"  onclick="setTab('income')">Pemasukan</button>
+          <button class="tab" id="tab-expense" onclick="setTab('expense')">Pengeluaran</button>
+        </div>
+        <div class="mctl">
+          <input id="msearch" placeholder="cari item, kategori, nominal..." oninput="setSearch(this.value)">
+          <select id="msort" onchange="setSortSel(this.value)"></select>
+        </div>
+        <div class="bar">
+          <button class="btn" onclick="addTop()">+ Tambah baris</button>
+          <button class="btn" onclick="clearFilters()">Bersihkan filter</button>
+          <span class="muted">Nominal boleh 5000000 atau 5.000.000 &middot; pakai &ldquo;+ sub&rdquo; untuk rincian</span>
+        </div>
+        <div class="tablewrap">
+          <table>
+            <thead><tr id="head"></tr><tr class="filters" id="filters"></tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div class="pg" id="pager"></div>
+        </div>
+        <h2>Catatan</h2>
+        <textarea id="notes" spellcheck="false" oninput="DATA.notes=this.value"></textarea>
+      </section>
 
-  <div class="bar">
-    <button class="btn" onclick="addTop()">+ Tambah baris</button>
-    <button class="btn" onclick="clearFilters()">Bersihkan filter</button>
-    <span class="muted">Nominal boleh 5000000 atau 5.000.000 &middot; pakai &ldquo;+ sub&rdquo; untuk rincian</span>
-  </div>
+      <!-- ============== TO-DO ============== -->
+      <section id="v-kan" class="view">
+        <div class="bar">
+          <input id="ksearch" placeholder="cari to-do..." oninput="KQ=this.value;renderBoard()" style="max-width:280px">
+          <span class="muted">Seret kartu antar kolom (di HP pakai tombol &lsaquo; &rsaquo;) &middot; klik kartu untuk rincian</span>
+        </div>
+        <div class="board" id="board"></div>
+      </section>
 
-  <div class="tablewrap">
-    <table>
-      <thead>
-        <tr id="head"></tr>
-        <tr class="filters" id="filters"></tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <div class="pg" id="pager"></div>
-  </div>
+    </div>
 
-  <h2>Catatan</h2>
-  <textarea id="notes" spellcheck="false" oninput="DATA.notes=this.value"></textarea>
-
-  <div class="bar">
-    <button class="primary" onclick="save()">Simpan</button>
-    <span id="status" class="ok"></span>
-    <span class="muted">Simpan terakhir yang menang.</span>
-  </div>
+    <div class="savebar">
+      <button class="primary" onclick="save()">Simpan</button>
+      <span id="status" class="ok"></span>
+      <span class="muted">Simpan terakhir yang menang.</span>
+    </div>
+  </main>
 </div>
 
 <script>
 const TOKEN = "__TOKEN__";
 let DATA = __DATA__;
-(DATA.entries||[]).forEach(e=>{ if(!e.parent) e.parent=''; });
+DATA.entries = DATA.entries || []; DATA.tasks = DATA.tasks || [];
+DATA.entries.forEach(e=>{ if(!e.parent) e.parent=''; });
+DATA.tasks.forEach(t=>{ if(!t.parent) t.parent=''; });
 
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const tmp = () => 'tmp-'+Math.random().toString(36).slice(2,9);
+
+/* ================= view switching ================= */
+let VIEW='fin';
+function setView(v){
+  VIEW=v;
+  document.getElementById('v-fin').className='view'+(v==='fin'?' on':'');
+  document.getElementById('v-kan').className='view'+(v==='kan'?' on':'');
+  document.getElementById('nav-fin').className='nav'+(v==='fin'?' on':'');
+  document.getElementById('nav-kan').className='nav'+(v==='kan'?' on':'');
+  if(v==='kan') renderBoard();
+}
+
+/* ================= KEUANGAN ================= */
 const COLS = [
   {k:'status',   t:'Status',   w:'120px'},
   {k:'item',     t:'Item',     w:''},
@@ -155,28 +247,20 @@ const COLS = [
   {k:'category', t:'Kategori', w:'140px'},
   {k:'date',     t:'Tanggal',  w:'150px'},
 ];
-const ST = {
-  income:  {sort:{k:'item',d:1}, f:{}, q:'', page:1},
-  expense: {sort:{k:'item',d:1}, f:{}, q:'', page:1},
-};
-let TAB = 'expense';
-const PAGE_SIZE = 10;
+const ST = { income:{sort:{k:'item',d:1},f:{},q:'',page:1}, expense:{sort:{k:'item',d:1},f:{},q:'',page:1} };
+let TAB='expense'; const PAGE_SIZE=10;
 
-const rp = n => { n=Math.round(Number(n)||0);
-  return (n<0?'-':'')+'Rp '+Math.abs(n).toLocaleString('id-ID'); };
+const rp = n => { n=Math.round(Number(n)||0); return (n<0?'-':'')+'Rp '+Math.abs(n).toLocaleString('id-ID'); };
 const digits = s => { const neg=String(s).trim().startsWith('-');
   const d=String(s||'').replace(/[^0-9]/g,''); const n=d?parseInt(d,10):0; return neg?-n:n; };
-const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const byId = id => (DATA.entries||[]).find(e=>e.id===id);
-const kids = id => (DATA.entries||[]).filter(e=>e.parent===id);
+const byId = id => DATA.entries.find(e=>e.id===id);
+const kids = id => DATA.entries.filter(e=>e.parent===id);
 const amountOf = e => { const k=kids(e.id); return k.length ? k.reduce((a,c)=>a+amountOf(c),0) : (Number(e.amount)||0); };
-const tmp = () => 'tmp-'+Math.random().toString(36).slice(2,9);
-const countTop = k => (DATA.entries||[]).filter(e=>e.kind===k && !e.parent).length;
+const countTop = k => DATA.entries.filter(e=>e.kind===k && !e.parent).length;
 
 function updateSummary(){
-  const all = DATA.entries||[];
-  const parents = new Set(all.filter(e=>e.parent).map(e=>e.parent));
-  const lv = all.filter(e=>!parents.has(e.id));
+  const all=DATA.entries, parents=new Set(all.filter(e=>e.parent).map(e=>e.parent));
+  const lv=all.filter(e=>!parents.has(e.id));
   const t=(k,s)=>lv.filter(e=>e.kind===k&&e.status===s).reduce((a,e)=>a+(Number(e.amount)||0),0);
   const ia=t('income','actual'), ie=t('income','expected'), ea=t('expense','actual'), ee=t('expense','expected');
   const cards=[
@@ -189,153 +273,212 @@ function updateSummary(){
   ];
   document.getElementById('cards').innerHTML = cards.map(function(c){
     return '<div class="card'+(c[4]?' big':'')+'"><div class="l">'+c[0]+'</div>'+
-           '<div class="v '+c[3]+'">'+c[1]+'</div>'+
-           (c[2]?'<div class="s">'+c[2]+'</div>':'')+'</div>'; }).join('');
-  document.getElementById('tab-income').textContent  = 'Pemasukan ('+countTop('income')+')';
-  document.getElementById('tab-expense').textContent = 'Pengeluaran ('+countTop('expense')+')';
+           '<div class="v '+c[3]+'">'+c[1]+'</div>'+(c[2]?'<div class="s">'+c[2]+'</div>':'')+'</div>'; }).join('');
+  document.getElementById('tab-income').textContent='Pemasukan ('+countTop('income')+')';
+  document.getElementById('tab-expense').textContent='Pengeluaran ('+countTop('expense')+')';
 }
 
 const fieldText = (o,k) => k==='amount' ? String(amountOf(o))
-  : k==='status' ? (o.status==='actual'?'sudah':'rencana')
-  : String(o[k]||'');
+  : k==='status' ? (o.status==='actual'?'sudah':'rencana') : String(o[k]||'');
 
 function visibleTop(){
-  const st = ST[TAB];
-  let rows = (DATA.entries||[]).filter(e=>e.kind===TAB && !e.parent);
-  const q = (st.q||'').trim().toLowerCase();
-  if(q){  // mobile/global search: any column, parent or sub-item
-    rows = rows.filter(function(e){
-      const hit = o => COLS.some(c=>fieldText(o,c.k).toLowerCase().indexOf(q)!==-1);
-      return hit(e) || kids(e.id).some(hit);
-    });
-  }
+  const st=ST[TAB]; let rows=DATA.entries.filter(e=>e.kind===TAB && !e.parent);
+  const q=(st.q||'').trim().toLowerCase();
+  if(q) rows=rows.filter(function(e){
+    const hit=o=>COLS.some(c=>fieldText(o,c.k).toLowerCase().indexOf(q)!==-1);
+    return hit(e)||kids(e.id).some(hit); });
   COLS.forEach(function(c){
-    const q = (st.f[c.k]||'').trim().toLowerCase();
-    if(!q) return;
-    rows = rows.filter(function(e){
-      const hit = function(o){
-        let v;
-        if(c.k==='amount') v = String(amountOf(o));
-        else if(c.k==='status') v = (o.status==='actual'?'sudah':'rencana');
-        else v = String(o[c.k]||'');
-        return v.toLowerCase().indexOf(q) !== -1;
-      };
-      return hit(e) || kids(e.id).some(hit);
-    });
-  });
-  const k = st.sort.k, d = st.sort.d;
-  rows.sort(function(a,b){
-    let x,y;
-    if(k==='amount'){ x=amountOf(a); y=amountOf(b); }
-    else { x=String(a[k]||'').toLowerCase(); y=String(b[k]||'').toLowerCase();
-           if(!x&&y) return 1; if(x&&!y) return -1; }
-    return x<y?-d:x>y?d:0;
-  });
+    const f=(st.f[c.k]||'').trim().toLowerCase(); if(!f) return;
+    rows=rows.filter(function(e){
+      const hit=o=>fieldText(o,c.k).toLowerCase().indexOf(f)!==-1;
+      return hit(e)||kids(e.id).some(hit); }); });
+  const k=st.sort.k,d=st.sort.d;
+  rows.sort(function(a,b){ let x,y;
+    if(k==='amount'){x=amountOf(a);y=amountOf(b);}
+    else{x=String(a[k]||'').toLowerCase();y=String(b[k]||'').toLowerCase();
+         if(!x&&y)return 1; if(x&&!y)return -1;}
+    return x<y?-d:x>y?d:0; });
   return rows;
 }
-const hasFilter = () => COLS.some(c=>(ST[TAB].f[c.k]||'').trim());
+const hasFilter=()=>COLS.some(c=>(ST[TAB].f[c.k]||'').trim());
 
 function renderHead(){
-  const st = ST[TAB];
-  document.getElementById('head').innerHTML = COLS.map(function(c){
-    const on = st.sort.k===c.k;
-    const ar = on ? (st.sort.d>0?'&#9650;':'&#9660;') : '&#8645;';
-    return '<th class="s" style="'+(c.w?'width:'+c.w:'')+'" onclick="sortBy(\''+c.k+'\')">'+
-           c.t+' <span class="ar">'+ar+'</span></th>';
-  }).join('') + '<th style="width:150px"></th>';
-  document.getElementById('filters').innerHTML = COLS.map(function(c){
-    return '<th><input placeholder="filter..." value="'+esc(st.f[c.k]||'')+
-           '" oninput="setFilter(\''+c.k+'\', this.value)"></th>';
-  }).join('') + '<th></th>';
+  const st=ST[TAB];
+  document.getElementById('head').innerHTML=COLS.map(function(c){
+    const on=st.sort.k===c.k, ar=on?(st.sort.d>0?'&#9650;':'&#9660;'):'&#8645;';
+    return '<th class="s" style="'+(c.w?'width:'+c.w:'')+'" onclick="sortBy(\''+c.k+'\')">'+c.t+' <span class="ar">'+ar+'</span></th>';
+  }).join('')+'<th style="width:150px"></th>';
+  document.getElementById('filters').innerHTML=COLS.map(function(c){
+    return '<th><input placeholder="filter..." value="'+esc(st.f[c.k]||'')+'" oninput="setFilter(\''+c.k+'\', this.value)"></th>';
+  }).join('')+'<th></th>';
 }
-
-function rowHtml(e, isSub){
-  const k = kids(e.id), computed = k.length>0;
-  const amt = computed ? amountOf(e) : (Number(e.amount)||0);
-  const sel = '<select onchange="upd(\''+e.id+'\',\'status\',this.value)">'+
+function rowHtml(e,isSub){
+  const k=kids(e.id), computed=k.length>0, amt=computed?amountOf(e):(Number(e.amount)||0);
+  const sel='<select onchange="upd(\''+e.id+'\',\'status\',this.value)">'+
     '<option value="actual"'+(e.status==='actual'?' selected':'')+'>Sudah</option>'+
     '<option value="expected"'+(e.status==='expected'?' selected':'')+'>Rencana</option></select>';
   return '<tr class="'+(isSub?'sub':'')+'" data-id="'+e.id+'">'+
     '<td data-l="Status">'+sel+'</td>'+
     '<td data-l="Item"><span class="tw">'+(isSub?'&#8627; ':'')+'</span><input value="'+esc(e.item)+'" '+
-      'placeholder="'+(isSub?'rincian...':'mis. Administrasi KUA')+'" '+
-      'oninput="upd(\''+e.id+'\',\'item\',this.value)"></td>'+
-    '<td class="amt" data-l="Nominal"><input inputmode="numeric" '+
-      (computed?'disabled title="total dari sub-item"':'')+' '+
-      'value="'+(amt?amt.toLocaleString('id-ID'):'')+'" '+
-      'oninput="upd(\''+e.id+'\',\'amount\',digits(this.value))" '+
+      'placeholder="'+(isSub?'rincian...':'mis. Administrasi KUA')+'" oninput="upd(\''+e.id+'\',\'item\',this.value)"></td>'+
+    '<td class="amt" data-l="Nominal"><input inputmode="numeric" '+(computed?'disabled title="total dari sub-item"':'')+' '+
+      'value="'+(amt?amt.toLocaleString('id-ID'):'')+'" oninput="upd(\''+e.id+'\',\'amount\',digits(this.value))" '+
       'onblur="this.value=this.value?digits(this.value).toLocaleString(\'id-ID\'):\'\'"></td>'+
     '<td data-l="Kategori"><input value="'+esc(e.category)+'" oninput="upd(\''+e.id+'\',\'category\',this.value)"></td>'+
     '<td data-l="Tanggal"><input type="date" value="'+esc(e.date)+'" oninput="upd(\''+e.id+'\',\'date\',this.value)"></td>'+
     '<td class="act">'+(isSub?'':'<button class="btn" onclick="addSub(\''+e.id+'\')">+ sub</button> ')+
       '<button class="btn del" onclick="del(\''+e.id+'\')">&#10005;</button></td></tr>';
 }
-
 function render(){
   renderHead();
-  const st = ST[TAB];
-  const rows = visibleTop();
-  const pages = Math.max(1, Math.ceil(rows.length/PAGE_SIZE));
+  const st=ST[TAB], rows=visibleTop(), pages=Math.max(1,Math.ceil(rows.length/PAGE_SIZE));
   if(st.page>pages) st.page=pages;
-  const slice = rows.slice((st.page-1)*PAGE_SIZE, st.page*PAGE_SIZE);
-  let html='';
-  slice.forEach(function(e){ html += rowHtml(e,false);
-    kids(e.id).forEach(function(c){ html += rowHtml(c,true); }); });
-  document.getElementById('rows').innerHTML = html ||
+  const slice=rows.slice((st.page-1)*PAGE_SIZE, st.page*PAGE_SIZE);
+  let h=''; slice.forEach(function(e){ h+=rowHtml(e,false); kids(e.id).forEach(function(c){h+=rowHtml(c,true);}); });
+  document.getElementById('rows').innerHTML = h ||
     '<tr><td colspan="6" class="empty">Belum ada data'+(hasFilter()?' yang cocok dengan filter':'')+'.</td></tr>';
-  document.getElementById('pager').innerHTML =
+  document.getElementById('pager').innerHTML=
     '<span class="muted">'+rows.length+' baris utama &middot; halaman '+st.page+'/'+pages+'</span>'+
     '<button class="btn" '+(st.page<=1?'disabled':'')+' onclick="go(-1)">&lsaquo; Sebelumnya</button>'+
     '<button class="btn" '+(st.page>=pages?'disabled':'')+' onclick="go(1)">Berikutnya &rsaquo;</button>';
-  document.getElementById('tab-income').className  = 'tab'+(TAB==='income'?' on':'');
-  document.getElementById('tab-expense').className = 'tab'+(TAB==='expense'?' on':'');
-  syncMobile();
-  updateSummary();
+  document.getElementById('tab-income').className='tab'+(TAB==='income'?' on':'');
+  document.getElementById('tab-expense').className='tab'+(TAB==='expense'?' on':'');
+  syncMobile(); updateSummary(); updateKanCount();
 }
-
 function syncMobile(){
-  const st = ST[TAB];
-  const sel = document.getElementById('msort');
-  sel.innerHTML = COLS.map(function(c){
+  const st=ST[TAB], sel=document.getElementById('msort');
+  sel.innerHTML=COLS.map(function(c){
     return '<option value="'+c.k+':1"'+(st.sort.k===c.k&&st.sort.d>0?' selected':'')+'>'+c.t+' ↑</option>'+
            '<option value="'+c.k+':-1"'+(st.sort.k===c.k&&st.sort.d<0?' selected':'')+'>'+c.t+' ↓</option>';
   }).join('');
-  document.getElementById('msearch').value = st.q||'';
+  document.getElementById('msearch').value=st.q||'';
 }
 function setSearch(v){ ST[TAB].q=v; ST[TAB].page=1; render(); }
 function setSortSel(v){ const p=v.split(':'); ST[TAB].sort={k:p[0],d:parseInt(p[1],10)}; render(); }
 function setTab(t){ TAB=t; render(); }
-function sortBy(k){ const s=ST[TAB].sort; s.d = (s.k===k) ? -s.d : 1; s.k=k; render(); }
+function sortBy(k){ const s=ST[TAB].sort; s.d=(s.k===k)?-s.d:1; s.k=k; render(); }
 function setFilter(k,v){ ST[TAB].f[k]=v; ST[TAB].page=1; render(); }
 function clearFilters(){ ST[TAB].f={}; ST[TAB].q=''; ST[TAB].page=1; render(); }
 function go(d){ ST[TAB].page+=d; render(); }
-function upd(id,k,v){ const e=byId(id); if(!e) return; e[k]=v;
-  if(k==='amount'||k==='status') updateSummary(); }
-function addTop(){
-  DATA.entries.push({id:tmp(),kind:TAB,status:'expected',item:'',amount:0,category:'',date:'',parent:''});
-  ST[TAB].page = Math.max(1, Math.ceil(visibleTop().length/PAGE_SIZE));
-  render();
-}
-function addSub(pid){
-  const p=byId(pid); if(!p) return;
-  DATA.entries.push({id:tmp(),kind:p.kind,status:p.status,item:'',amount:0,
-                     category:p.category||'',date:'',parent:pid});
-  render();
-}
-function del(id){ DATA.entries = DATA.entries.filter(e=>e.id!==id && e.parent!==id); render(); }
+function upd(id,k,v){ const e=byId(id); if(!e) return; e[k]=v; if(k==='amount'||k==='status') updateSummary(); }
+function addTop(){ DATA.entries.push({id:tmp(),kind:TAB,status:'expected',item:'',amount:0,category:'',date:'',parent:''});
+  ST[TAB].page=Math.max(1,Math.ceil(visibleTop().length/PAGE_SIZE)); render(); }
+function addSub(pid){ const p=byId(pid); if(!p) return;
+  DATA.entries.push({id:tmp(),kind:p.kind,status:p.status,item:'',amount:0,category:p.category||'',date:'',parent:pid}); render(); }
+function del(id){ DATA.entries=DATA.entries.filter(e=>e.id!==id&&e.parent!==id); render(); }
 
+/* ================= TO-DO (kanban) ================= */
+const KCOLS=[['todo','Rencana','#6b7280'],['doing','Proses','#2f6df6'],['done','Selesai','#39d98a']];
+let KQ='', OPEN={};
+const tById = id => DATA.tasks.find(t=>t.id===id);
+const tKids = id => DATA.tasks.filter(t=>t.parent===id);
+const cards = st => DATA.tasks.filter(t=>!t.parent && t.status===st);
+
+function updateKanCount(){
+  const open=DATA.tasks.filter(t=>!t.parent&&t.status!=='done').length;
+  document.getElementById('kan-ct').textContent=open;
+}
+function matches(c){
+  const q=KQ.trim().toLowerCase(); if(!q) return true;
+  const hit=o=>((o.title||'')+' '+(o.detail||'')+' '+(o.category||'')).toLowerCase().indexOf(q)!==-1;
+  return hit(c)||tKids(c.id).some(hit);
+}
+function cardHtml(c){
+  const ks=tKids(c.id), done=ks.filter(k=>k.status==='done').length;
+  const idx=KCOLS.findIndex(x=>x[0]===c.status);
+  const chips=[];
+  if(ks.length) chips.push('<span class="chip pr">'+done+'/'+ks.length+'</span>');
+  if(c.category) chips.push('<span class="chip">#'+esc(c.category)+'</span>');
+  if(c.due) chips.push('<span class="chip due">'+esc(c.due)+'</span>');
+  const ck=ks.map(function(k){
+    return '<div class="ck'+(k.status==='done'?' done':'')+'">'+
+      '<input type="checkbox" '+(k.status==='done'?'checked':'')+' onchange="tgl(\''+k.id+'\',this.checked)">'+
+      '<input class="cx" value="'+esc(k.title)+'" oninput="tupd(\''+k.id+'\',\'title\',this.value)">'+
+      '<button class="btn del" onclick="tdel(\''+k.id+'\')">&#10005;</button></div>'; }).join('');
+  return '<div class="tcard'+(OPEN[c.id]?' open':'')+'" draggable="true" data-id="'+c.id+'"'+
+    ' ondragstart="dstart(event,\''+c.id+'\')" ondragend="dend(event)">'+
+    '<div class="th" onclick="toggleCard(event,\''+c.id+'\')">'+
+      '<div class="tt">'+esc(c.title)+'</div></div>'+
+    (chips.length?'<div class="meta">'+chips.join('')+'</div>':'')+
+    '<div class="tbody">'+
+      '<input value="'+esc(c.title)+'" oninput="tupd(\''+c.id+'\',\'title\',this.value)" placeholder="judul">'+
+      '<textarea style="min-height:60px;margin-top:6px" placeholder="catatan..." '+
+        'oninput="tupd(\''+c.id+'\',\'detail\',this.value)">'+esc(c.detail)+'</textarea>'+
+      '<div class="trow">'+
+        '<input style="flex:1;min-width:110px" value="'+esc(c.category)+'" placeholder="kategori" '+
+          'oninput="tupd(\''+c.id+'\',\'category\',this.value)">'+
+        '<input style="flex:1;min-width:140px" type="date" value="'+esc(c.due)+'" '+
+          'oninput="tupd(\''+c.id+'\',\'due\',this.value)">'+
+      '</div>'+
+      (ck?'<div style="margin-top:8px">'+ck+'</div>':'')+
+      '<div class="trow">'+
+        '<button class="btn" onclick="addCk(\''+c.id+'\')">+ checklist</button>'+
+        '<button class="btn" '+(idx<=0?'disabled':'')+' onclick="move(\''+c.id+'\',-1)">&lsaquo;</button>'+
+        '<button class="btn" '+(idx>=KCOLS.length-1?'disabled':'')+' onclick="move(\''+c.id+'\',1)">&rsaquo;</button>'+
+        '<button class="btn del" onclick="tdel(\''+c.id+'\')">Hapus</button>'+
+      '</div>'+
+    '</div></div>';
+}
+function renderBoard(){
+  document.getElementById('board').innerHTML=KCOLS.map(function(col){
+    const list=cards(col[0]).filter(matches);
+    return '<div class="col" id="col-'+col[0]+'" ondragover="dover(event,\''+col[0]+'\')" '+
+      'ondragleave="dleave(\''+col[0]+'\')" ondrop="drop(event,\''+col[0]+'\')">'+
+      '<div class="colhead"><span class="dot" style="background:'+col[2]+'"></span>'+
+        '<span class="n">'+col[1]+'</span><span class="c">'+list.length+'</span></div>'+
+      '<div class="collist">'+(list.map(cardHtml).join('')||'<div class="empty" style="padding:14px">kosong</div>')+'</div>'+
+      '<button class="addcard" onclick="addCard(\''+col[0]+'\')">+ tambah</button></div>';
+  }).join('');
+  updateKanCount();
+}
+function toggleCard(ev,id){
+  if(ev.target.closest('input,textarea,button,select')) return;
+  OPEN[id]=!OPEN[id]; renderBoard();
+}
+function tupd(id,k,v){ const t=tById(id); if(!t) return; t[k]=v;
+  if(k==='title'||k==='category'||k==='due') { /* re-render on blur only to keep focus */ } }
+function tgl(id,on){ const t=tById(id); if(!t) return; t.status=on?'done':'todo'; renderBoard(); }
+function move(id,d){ const t=tById(id); if(!t) return;
+  const i=KCOLS.findIndex(x=>x[0]===t.status), n=Math.min(KCOLS.length-1,Math.max(0,i+d));
+  t.status=KCOLS[n][0]; renderBoard(); }
+function addCard(st){ const id=tmp();
+  DATA.tasks.push({id:id,title:'',detail:'',status:st,category:'',due:'',parent:''});
+  OPEN[id]=true; renderBoard();
+  const el=document.querySelector('[data-id="'+id+'"] .tbody input'); if(el) el.focus(); }
+function addCk(pid){ const p=tById(pid); if(!p) return;
+  DATA.tasks.push({id:tmp(),title:'',detail:'',status:'todo',category:'',due:'',parent:pid});
+  OPEN[pid]=true; renderBoard(); }
+function tdel(id){ DATA.tasks=DATA.tasks.filter(t=>t.id!==id&&t.parent!==id); renderBoard(); }
+
+let DRAG=null;
+function dstart(ev,id){ DRAG=id; ev.dataTransfer.effectAllowed='move';
+  try{ev.dataTransfer.setData('text/plain',id);}catch(e){}
+  ev.currentTarget.classList.add('drag'); }
+function dend(ev){ ev.currentTarget.classList.remove('drag'); DRAG=null; }
+function dover(ev,st){ ev.preventDefault(); const c=document.getElementById('col-'+st); if(c)c.classList.add('over'); }
+function dleave(st){ const c=document.getElementById('col-'+st); if(c)c.classList.remove('over'); }
+function drop(ev,st){ ev.preventDefault();
+  const id=DRAG||(ev.dataTransfer?ev.dataTransfer.getData('text/plain'):'');
+  const t=id?tById(id):null; if(t){ t.status=st; } DRAG=null; renderBoard(); }
+
+/* ================= save ================= */
 async function save(){
-  const body={entries:(DATA.entries||[]).filter(e=>e.item||e.amount||kids(e.id).length),
-              notes:document.getElementById('notes').value};
+  const body={
+    entries:DATA.entries.filter(e=>e.item||e.amount||kids(e.id).length),
+    tasks:DATA.tasks.filter(t=>(t.title||'').trim()),
+    notes:document.getElementById('notes').value };
   const st=document.getElementById('status'); st.textContent='menyimpan...';
   try{
     const r=await fetch('/api/plan?token='+encodeURIComponent(TOKEN),
       {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
     if(!r.ok) throw new Error(r.status);
-    DATA=await r.json(); (DATA.entries||[]).forEach(e=>{ if(!e.parent) e.parent=''; });
-    document.getElementById('notes').value = DATA.notes||'';
-    render(); st.textContent='tersimpan ✓';
-    setTimeout(function(){ st.textContent=''; },2500);
+    DATA=await r.json();
+    DATA.entries=DATA.entries||[]; DATA.tasks=DATA.tasks||[];
+    DATA.entries.forEach(e=>{ if(!e.parent) e.parent=''; });
+    DATA.tasks.forEach(t=>{ if(!t.parent) t.parent=''; });
+    document.getElementById('notes').value=DATA.notes||'';
+    render(); if(VIEW==='kan') renderBoard();
+    st.textContent='tersimpan ✓'; setTimeout(function(){st.textContent='';},2500);
   }catch(e){ st.textContent='gagal menyimpan: '+e.message; }
 }
 

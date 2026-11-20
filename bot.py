@@ -342,6 +342,56 @@ def tool_budget_delete(id: str) -> str:
     return f"ok, deleted {id}" if get_plan().delete(id) else f"error: no entry with id '{id}'"
 
 
+def tool_task_board(status: str = "") -> str:
+    """The whole to-do board (or one column), with ids and checklist progress."""
+    return get_plan().tasks_text(status=status.strip().lower()) + f"\n\nlink: {doc_url()}"
+
+
+def tool_task_add(title: str, detail: str = "", status: str = "todo",
+                  category: str = "", due: str = "", parent: str = "") -> str:
+    """Add a to-do card, or a checklist item when parent is given."""
+    if not title:
+        return "error: title is required"
+    t = get_plan().task_add(title=title, detail=detail, status=status,
+                            category=category, due=due, parent=parent)
+    where = f" sebagai checklist di '{parent}'" if parent and t.get("parent") else ""
+    return f"ok, to-do [{t['id']}] '{t['title']}' ({t['status']}){where}"
+
+
+def tool_task_add_many(items: list, status: str = "todo", category: str = "",
+                       parent: str = "") -> str:
+    """Add many to-dos at once; with parent they become its checklist."""
+    if not items:
+        return "error: items is required"
+    p = get_plan()
+    if parent and not _resolve_task_exists(parent):
+        p.task_add(title=parent, status=status, category=category)
+    added = p.task_add_many(items, status=status, category=category, parent=parent)
+    head = f"ok, {len(added)} to-do ditambahkan" + (f" ke '{parent}'" if parent else "")
+    return head + ":\n" + "\n".join(f"  - {a['title']}" for a in added)
+
+
+def _resolve_task_exists(ref: str) -> bool:
+    from plan import _resolve_task
+    return bool(_resolve_task(get_plan().read()["tasks"], ref))
+
+
+def tool_task_update(id: str, title: str = "", detail: str = "", status: str = "",
+                     category: str = "", due: str = "") -> str:
+    """Update a to-do (id or title). Use status to move it between columns."""
+    t = get_plan().task_update(id, title=title or None, detail=detail or None,
+                               status=status or None, category=category or None,
+                               due=due or None)
+    if not t:
+        return f"error: no to-do matching '{id}' (pakai task_board untuk lihat id)"
+    return f"ok, [{t['id']}] '{t['title']}' -> {t['status']}"
+
+
+def tool_task_delete(id: str) -> str:
+    """Delete a to-do (and its checklist) by id or title."""
+    return f"ok, dihapus: {id}" if get_plan().task_delete(id) else f"error: no to-do matching '{id}'"
+
+
 def tool_notes_read() -> str:
     """Read the freeform notes attached to the plan."""
     return get_plan().read().get("notes", "").strip() or "(no notes yet)"
@@ -369,6 +419,11 @@ TOOLS = {
     "budget_add_items": tool_budget_add_items,
     "budget_update": tool_budget_update,
     "budget_delete": tool_budget_delete,
+    "task_board": tool_task_board,
+    "task_add": tool_task_add,
+    "task_add_many": tool_task_add_many,
+    "task_update": tool_task_update,
+    "task_delete": tool_task_delete,
     "notes_read": tool_notes_read,
     "notes_append": tool_notes_append,
 }
@@ -521,6 +576,92 @@ TOOL_SCHEMA = [
         "function": {
             "name": "budget_delete",
             "description": "Delete a ledger entry by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_board",
+            "description": "Read the wedding to-do board (kanban). Columns: todo (Rencana), "
+                           "doing (Proses), done (Selesai). Shows each card's id, checklist "
+                           "progress, due date. Use for 'apa aja yang harus dilakukan', "
+                           "'checklist kita apa', 'udah sampai mana'.",
+            "parameters": {
+                "type": "object",
+                "properties": {"status": {"type": "string", "enum": ["todo", "doing", "done"]}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_add",
+            "description": "Add one to-do card. Pass parent (card id or title) to add it as a "
+                           "checklist item inside that card instead.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "detail": {"type": "string"},
+                    "status": {"type": "string", "enum": ["todo", "doing", "done"]},
+                    "category": {"type": "string", "description": "e.g. akad, resepsi, dokumen"},
+                    "due": {"type": "string", "description": "YYYY-MM-DD"},
+                    "parent": {"type": "string"},
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_add_many",
+            "description": "Add a whole checklist at once. With parent, the items become that "
+                           "card's checklist (creating the card if needed); without parent they "
+                           "become separate cards. Use this when asked to record a list of steps.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": {"type": "string"},
+                              "description": "one to-do per entry"},
+                    "parent": {"type": "string", "description": "card title to group them under"},
+                    "status": {"type": "string", "enum": ["todo", "doing", "done"]},
+                    "category": {"type": "string"},
+                },
+                "required": ["items"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_update",
+            "description": "Update a to-do by id or title. Set status to move it between "
+                           "columns (e.g. mark something done).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "task id or its title"},
+                    "title": {"type": "string"},
+                    "detail": {"type": "string"},
+                    "status": {"type": "string", "enum": ["todo", "doing", "done"]},
+                    "category": {"type": "string"},
+                    "due": {"type": "string"},
+                },
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_delete",
+            "description": "Delete a to-do card (and its checklist) by id or title.",
             "parameters": {
                 "type": "object",
                 "properties": {"id": {"type": "string"}},
@@ -1072,6 +1213,8 @@ def run_webhook(waha: "Waha") -> int:
                 except Exception:  # noqa: BLE001
                     return self._send(400, "bad json")
                 get_plan().replace_all(payload.get("entries") or [], payload.get("notes"))
+                if isinstance(payload.get("tasks"), list):
+                    get_plan().replace_tasks(payload["tasks"])
                 return self._send(200, json.dumps(get_plan().read(), ensure_ascii=False),
                                   "application/json; charset=utf-8")
             return self._send(404, "not found")
