@@ -55,15 +55,16 @@ _PAGE = r"""<!doctype html>
        font:600 14px inherit;white-space:nowrap;overflow:hidden}
   .nav:hover{background:#151a22;color:var(--fg)}
   .nav.on{background:#17233d;color:#fff}
-  .ic{width:20px;height:20px;flex:0 0 20px;fill:none;stroke:currentColor;stroke-width:1.7;
-      stroke-linecap:round;stroke-linejoin:round}
+  /* sidebar icon only -- NOT td.ic, which is the ledger's Item cell */
+  .nic{width:20px;height:20px;flex:0 0 20px;fill:none;stroke:currentColor;stroke-width:1.7;
+       stroke-linecap:round;stroke-linejoin:round}
   .nav .lb{flex:1;overflow:hidden;text-overflow:ellipsis}
   .nav .ct{font-size:11px;color:var(--muted);background:#0b0d11;border:1px solid var(--line);
            border-radius:999px;padding:1px 7px;flex:0 0 auto}
   .nav.on .ct{color:#fff}
   .brand{display:flex;align-items:center;gap:11px;font-size:15px;font-weight:700;
          padding:6px 10px 14px;white-space:nowrap;overflow:hidden}
-  .brand .ic{color:var(--accent)}
+  .brand .nic{color:var(--accent)}
   .brand .bt{flex:1;overflow:hidden;text-overflow:ellipsis}
   .collapse{background:transparent;border:0;color:var(--muted);cursor:pointer;padding:2px;
             flex:0 0 auto;display:flex}
@@ -286,7 +287,7 @@ _PAGE = r"""<!doctype html>
 <div class="app">
   <aside class="side" id="side">
     <div class="brand">
-      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7 8.5 3h7L12 7Z"/>
+      <svg class="nic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7 8.5 3h7L12 7Z"/>
         <circle cx="12" cy="14.5" r="6"/></svg>
       <span class="bt">__TITLE__</span>
       <button class="collapse" id="collapse" onclick="toggleSide()" title="Lipat sidebar">
@@ -294,15 +295,15 @@ _PAGE = r"""<!doctype html>
       </button>
     </div>
     <button class="nav on" id="nav-fin" onclick="setView('fin')" title="Keuangan">
-      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h18v12H3z"/>
+      <svg class="nic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h18v12H3z"/>
         <circle cx="12" cy="13" r="2.6"/></svg>
       <span class="lb">Keuangan</span></button>
     <button class="nav" id="nav-kan" onclick="setView('kan')" title="To-do">
-      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v15H4z"/>
+      <svg class="nic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v15H4z"/>
         <path d="m8 12 2.6 2.6L16 9.4"/></svg>
       <span class="lb">To-do</span><span class="ct" id="kan-ct">0</span></button>
     <button class="nav" id="nav-set" onclick="setView('set')" title="Settings">
-      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/>
+      <svg class="nic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/>
         <path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></svg>
       <span class="lb">Settings</span></button>
     <div class="sidefoot">bersama &middot; @bang</div>
