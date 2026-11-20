@@ -83,8 +83,16 @@ _PAGE = r"""<!doctype html>
   input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
   td.amt input{text-align:right}
   td.amt input:disabled{background:#11151b;color:var(--muted);font-weight:700}
-  tr.sub td:nth-child(2){padding-left:24px}
-  tr.sub .tw{color:var(--muted)}
+  td.ic{display:flex;align-items:center;gap:6px}
+  td.ic .tw{flex:0 0 auto;line-height:1}
+  /* sub-items hug their parent: tighter rows, no divider until the last child */
+  tr.sub{background:#0f1319}
+  tr.sub td{padding-top:2px;padding-bottom:2px}
+  tr.sub td.ic{padding-left:22px}
+  tr.sub input,tr.sub select{padding:4px 7px;font-size:13px}
+  tr.hask td,tr.sub td{border-bottom:0}
+  tr.sub.lastsub td{border-bottom:1px solid var(--line)}
+  tr.sub .tw{color:var(--accent);opacity:.55}
   .pg{display:flex;gap:8px;align-items:center;justify-content:flex-end;padding:10px;flex-wrap:wrap}
   .empty{padding:26px;text-align:center;color:var(--muted)}
   .mctl{display:none;gap:8px;margin-bottom:10px}
@@ -154,8 +162,9 @@ _PAGE = r"""<!doctype html>
     tbody td::before{content:attr(data-l);color:var(--muted);font-size:12px;min-width:76px;flex:0 0 76px}
     tbody td.act{justify-content:flex-end;gap:8px;padding-top:8px}
     tbody td.act::before{content:''}
-    tr.sub{border-left:2px solid var(--accent);background:#12161d}
-    tr.sub td:nth-child(2){padding-left:0}
+    tr.sub{border-left:2px solid var(--accent);background:#12161d;margin-left:14px;padding-top:6px}
+    tr.sub td.ic{padding-left:0}
+    tbody tr.sub td,tbody tr.hask td{border-bottom:0}
     td.amt input{text-align:left}
     .tcard{cursor:default}
   }
@@ -312,14 +321,15 @@ function renderHead(){
     return '<th><input placeholder="filter..." value="'+esc(st.f[c.k]||'')+'" oninput="setFilter(\''+c.k+'\', this.value)"></th>';
   }).join('')+'<th></th>';
 }
-function rowHtml(e,isSub){
+function rowHtml(e,isSub,isLast){
   const k=kids(e.id), computed=k.length>0, amt=computed?amountOf(e):(Number(e.amount)||0);
+  const cls=(isSub?'sub':'')+(computed?' hask':'')+(isSub&&isLast?' lastsub':'');
   const sel='<select onchange="upd(\''+e.id+'\',\'status\',this.value)">'+
     '<option value="actual"'+(e.status==='actual'?' selected':'')+'>Sudah</option>'+
     '<option value="expected"'+(e.status==='expected'?' selected':'')+'>Rencana</option></select>';
-  return '<tr class="'+(isSub?'sub':'')+'" data-id="'+e.id+'">'+
+  return '<tr class="'+cls+'" data-id="'+e.id+'">'+
     '<td data-l="Status">'+sel+'</td>'+
-    '<td data-l="Item"><span class="tw">'+(isSub?'&#8627; ':'')+'</span><input value="'+esc(e.item)+'" '+
+    '<td class="ic" data-l="Item">'+(isSub?'<span class="tw">&#8627;</span>':'')+'<input value="'+esc(e.item)+'" '+
       'placeholder="'+(isSub?'rincian...':'mis. Administrasi KUA')+'" oninput="upd(\''+e.id+'\',\'item\',this.value)"></td>'+
     '<td class="amt" data-l="Nominal"><input inputmode="numeric" '+(computed?'disabled title="total dari sub-item"':'')+' '+
       'value="'+(amt?amt.toLocaleString('id-ID'):'')+'" oninput="upd(\''+e.id+'\',\'amount\',digits(this.value))" '+
@@ -334,7 +344,8 @@ function render(){
   const st=ST[TAB], rows=visibleTop(), pages=Math.max(1,Math.ceil(rows.length/PAGE_SIZE));
   if(st.page>pages) st.page=pages;
   const slice=rows.slice((st.page-1)*PAGE_SIZE, st.page*PAGE_SIZE);
-  let h=''; slice.forEach(function(e){ h+=rowHtml(e,false); kids(e.id).forEach(function(c){h+=rowHtml(c,true);}); });
+  let h=''; slice.forEach(function(e){ const k=kids(e.id); h+=rowHtml(e,false,false);
+    k.forEach(function(c,i){h+=rowHtml(c,true,i===k.length-1);}); });
   document.getElementById('rows').innerHTML = h ||
     '<tr><td colspan="6" class="empty">Belum ada data'+(hasFilter()?' yang cocok dengan filter':'')+'.</td></tr>';
   document.getElementById('pager').innerHTML=
