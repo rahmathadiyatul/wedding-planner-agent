@@ -735,7 +735,7 @@ function renderDrw(){
 /* edits that change where/how a pill is drawn redraw the calendar too; typing
    in a text field only updates DATA, so the input never loses focus. */
 function tupd(id,k,v){ const t=tById(id); if(!t) return; t[k]=v; }
-function setTime(id,v){ tupd(id,'time',v); renderDrw(); }
+function setTime(id,v){ tupd(id,'time',v); }  /* nothing on screen depends on it; don't steal focus */
 
 /* ---- reminder controls (email, via Brevo) ---- */
 function leadOpts(){
@@ -806,28 +806,58 @@ function drop(ev,ds){ ev.preventDefault();
    MAIL holds what the server merged from plan.json + .env. Edits go straight
    back into it and ride along on the next Simpan, so one save covers
    everything on every screen. */
-function mset(k,v){ MAIL[k]=v; if(k==='enabled') renderSettings(); }
+/* Typing must never rebuild the field being typed into, or the input loses
+   focus after every keystroke. So each piece of the screen renders on its
+   own, and an edit only redraws the parts that actually depend on it. */
+function mset(k,v){ MAIL[k]=v; if(k==='enabled') renderBanner(); }
 function mailPeople(){ return MAIL.people || (MAIL.people=[]); }
-function addPerson(){ mailPeople().push({name:'',email:''}); renderSettings();
-  const els=document.querySelectorAll('#m-people .prow input'); if(els.length) els[els.length-2].focus(); }
-function pset(i,k,v){ mailPeople()[i][k]=v; if(k==='name') renderSettings(); }
-function pdel(i){ mailPeople().splice(i,1); renderSettings(); }
+function pset(i,k,v){
+  const p=mailPeople()[i]; if(!p) return;
+  p[k]=v;
+  if(k==='name') renderDefaultTo();   /* the checkbox labels follow the names */
+}
+function addPerson(){
+  mailPeople().push({name:'',email:''});
+  renderPeople(); renderDefaultTo();
+  const rows=document.querySelectorAll('#m-people .prow');
+  if(rows.length){ const inp=rows[rows.length-1].querySelector('input'); if(inp) inp.focus(); }
+}
+function pdel(i){ mailPeople().splice(i,1); renderPeople(); renderDefaultTo(); }
 function toList(){ return (MAIL.default_to||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean); }
 function setDefaultTo(name,on){
   const cur=(MAIL.default_to||'').split(',').map(s=>s.trim()).filter(Boolean);
   const i=cur.map(s=>s.toLowerCase()).indexOf(name.toLowerCase());
   if(on&&i===-1) cur.push(name);
   if(!on&&i!==-1) cur.splice(i,1);
-  MAIL.default_to=cur.join(','); renderSettings();
+  MAIL.default_to=cur.join(','); renderDefaultTo();
 }
-function renderSettings(){
+function renderBanner(){
   const b=document.getElementById('mailstatus');
   const ready=MAIL.ready&&MAIL.enabled!==false;
   b.className='banner '+(ready?'ok':'warn');
   b.innerHTML=ready
     ? '&#10003; Pengingat aktif &middot; lewat '+esc(MAIL.transport)+' &middot; zona '+esc(MAIL.tz)
-    : '&#9888; Belum jalan: '+esc(MAIL.why||'belum lengkap');
-
+    : '&#9888; Belum jalan: '+esc(MAIL.why||'belum lengkap')+
+      ' <span class="muted sm">(status dicek ulang setelah Simpan)</span>';
+}
+function renderPeople(){
+  document.getElementById('m-people').innerHTML=mailPeople().map(function(p,i){
+    return '<div class="prow">'+
+      '<input placeholder="nama (mis. dian)" value="'+esc(p.name)+'" oninput="pset('+i+',\'name\',this.value)">'+
+      '<input placeholder="email" type="email" value="'+esc(p.email)+'" oninput="pset('+i+',\'email\',this.value)">'+
+      '<button class="btn del" onclick="pdel('+i+')">&#10005;</button></div>'; }).join('')
+    || '<div class="muted sm">belum ada. tambahkan minimal satu orang.</div>';
+}
+function renderDefaultTo(){
+  const sel=toList();
+  document.getElementById('m-default-to').innerHTML=mailPeople().filter(p=>p.name.trim()).map(function(p){
+    const on=sel.indexOf(p.name.trim().toLowerCase())!==-1;
+    return '<label class="who"><input type="checkbox" '+(on?'checked':'')+
+      ' onchange="setDefaultTo(\''+esc(p.name.trim())+'\',this.checked)"> '+esc(p.name)+'</label>';
+  }).join('') || '<span class="muted sm">isi daftar penerima dulu</span>';
+}
+function renderSettings(){
+  renderBanner();
   document.getElementById('m-from').value=MAIL.from_email||'';
   document.getElementById('m-fromname').value=MAIL.from_name||'';
   document.getElementById('m-time').value=MAIL.default_time||MAIL.eff_time||'';
@@ -838,19 +868,7 @@ function renderSettings(){
     return '<option value="'+l+'"'+((MAIL.default_lead||MAIL.eff_lead)===l?' selected':'')+'>'+
            esc(labels[i]||l)+'</option>'; }).join('');
 
-  document.getElementById('m-people').innerHTML=mailPeople().map(function(p,i){
-    return '<div class="prow">'+
-      '<input placeholder="nama (mis. dian)" value="'+esc(p.name)+'" oninput="pset('+i+',\'name\',this.value)">'+
-      '<input placeholder="email" type="email" value="'+esc(p.email)+'" oninput="pset('+i+',\'email\',this.value)">'+
-      '<button class="btn del" onclick="pdel('+i+')">&#10005;</button></div>'; }).join('')
-    || '<div class="muted sm">belum ada. tambahkan minimal satu orang.</div>';
-
-  const sel=toList();
-  document.getElementById('m-default-to').innerHTML=mailPeople().filter(p=>p.name).map(function(p){
-    const on=sel.indexOf(p.name.toLowerCase())!==-1;
-    return '<label class="who"><input type="checkbox" '+(on?'checked':'')+
-      ' onchange="setDefaultTo(\''+esc(p.name)+'\',this.checked)"> '+esc(p.name)+'</label>';
-  }).join('') || '<span class="muted sm">isi daftar penerima dulu</span>';
+  renderPeople(); renderDefaultTo();
 }
 async function mailTest(){
   const el=document.getElementById('m-testmsg');
