@@ -206,12 +206,15 @@ class PlanStore:
             self._write_locked(data)
 
     def task_add(self, title: str, detail: str = "", status: str = "todo",
-                 category: str = "", due: str = "", parent: str = "") -> dict:
+                 category: str = "", due: str = "", parent: str = "",
+                 time: str = "", remind: str = "", remind_to: str = "") -> dict:
         with self._lock:
             data = self._read_locked()
             pid = _resolve_task(data["tasks"], parent)
             t = _clean_task({"id": uuid.uuid4().hex[:8], "title": title, "detail": detail,
-                             "status": status, "category": category, "due": due, "parent": pid})
+                             "status": status, "category": category, "due": due,
+                             "time": time, "remind": remind, "remind_to": remind_to,
+                             "parent": pid})
             data["tasks"].append(t)
             self._write_locked(data)
         return t
@@ -414,6 +417,12 @@ def _clean_task(t: dict) -> dict:
         "status": status if status in TASK_STATES else "todo",
         "category": str(t.get("category") or "").strip(),
         "due": str(t.get("due") or "").strip(),
+        "time": str(t.get("time") or "").strip(),
+        # reminder: "" = use the configured default lead, "off" = never.
+        "remind": str(t.get("remind") or "").strip(),
+        "remind_to": str(t.get("remind_to") or "").strip(),
+        # bookkeeping for the scheduler: the send-time it last mailed for.
+        "notified": str(t.get("notified") or "").strip(),
         "parent": str(t.get("parent") or "").strip(),
     }
 
@@ -499,7 +508,18 @@ def _now() -> str:
 
 def render_page(token: str, store: PlanStore) -> str:
     import page
+    try:
+        import mailer
+        cfg = {"people": sorted(mailer.people().keys()),
+               "default_lead": mailer.REMIND_DEFAULT_LEAD,
+               "default_to": mailer.MAIL_TO_DEFAULT,
+               "default_time": mailer.REMIND_DEFAULT_TIME,
+               "enabled": mailer.enabled(),
+               "why": mailer.why_disabled()}
+    except Exception:  # noqa: BLE001
+        cfg = {"people": [], "default_lead": "1d", "default_to": "",
+               "default_time": "09:00", "enabled": False, "why": "mailer unavailable"}
     data = store.read()
     return page.render(token, store.title, data["entries"],
-                       data.get("notes", ""), data.get("tasks", []))
+                       data.get("notes", ""), data.get("tasks", []), cfg)
 

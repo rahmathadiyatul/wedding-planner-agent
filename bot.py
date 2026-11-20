@@ -19,6 +19,7 @@ import sys
 import time
 import threading
 import datetime as dt
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 
@@ -180,6 +181,7 @@ class Waha:
 # ---------------------------------------------------------------- shared plan
 
 import obs  # noqa: E402
+import mailer  # noqa: E402
 from plan import PlanStore, rupiah, render_page  # noqa: E402
 from settings import Settings  # noqa: E402
 
@@ -348,14 +350,14 @@ def tool_task_board(status: str = "") -> str:
 
 
 def tool_task_add(title: str, detail: str = "", status: str = "todo",
-                  category: str = "", due: str = "", parent: str = "") -> str:
-    """Add a to-do card, or a checklist item when parent is given."""
-    if not title:
-        return "error: title is required"
+                  category: str = "", due: str = "", parent: str = "",
+                  time: str = "", remind: str = "", remind_to: str = "") -> str:
+    """Add a to-do card (or a checklist item when `parent` is given)."""
     t = get_plan().task_add(title=title, detail=detail, status=status,
-                            category=category, due=due, parent=parent)
-    where = f" sebagai checklist di '{parent}'" if parent and t.get("parent") else ""
-    return f"ok, to-do [{t['id']}] '{t['title']}' ({t['status']}){where}"
+                            category=category, due=due, parent=parent,
+                            time=time, remind=remind, remind_to=remind_to)
+    where = f" di bawah '{parent}'" if parent else ""
+    return f"ok, to-do '{t['title']}'{where} dibuat (id {t['id']}){_remind_note(t)}"
 
 
 def tool_task_add_many(items: list, status: str = "todo", category: str = "",
@@ -377,14 +379,65 @@ def _resolve_task_exists(ref: str) -> bool:
 
 
 def tool_task_update(id: str, title: str = "", detail: str = "", status: str = "",
-                     category: str = "", due: str = "") -> str:
+                     category: str = "", due: str = "", time: str = "",
+                     remind: str = "", remind_to: str = "") -> str:
     """Update a to-do (id or title). Use status to move it between columns."""
     t = get_plan().task_update(id, title=title or None, detail=detail or None,
                                status=status or None, category=category or None,
-                               due=due or None)
+                               due=due or None, time=time or None,
+                               remind=remind or None, remind_to=remind_to or None)
     if not t:
         return f"error: no to-do matching '{id}' (pakai task_board untuk lihat id)"
     return f"ok, [{t['id']}] '{t['title']}' -> {t['status']}"
+
+
+def _remind_note(t: dict) -> str:
+    """One clause describing when (and to whom) a to-do will be mailed about."""
+    if t.get("parent"):
+        return ""
+    if not t.get("due"):
+        return " -- belum ada tanggal, jadi belum ada pengingat"
+    lead = t.get("remind") or mailer.REMIND_DEFAULT_LEAD
+    if mailer.parse_lead(lead) is None:
+        return " -- pengingat dimatikan"
+    who = mailer.resolve_recipients(t.get("remind_to") or "")
+    if not who:
+        return " -- tidak ada penerima email, jadi tidak ada pengingat"
+    return f" -- email {mailer.fmt_lead(lead)} ke {', '.join(n for n, _ in who)}"
+
+
+def tool_reminder_list() -> str:
+    """Every reminder still queued, soonest first."""
+    if not mailer.enabled():
+        return f"pengingat email mati: {mailer.why_disabled()}"
+    now = datetime.now(mailer.tz())
+    rows = []
+    for t, _kids, due, send_at, lead, who in _pending_reminders():
+        rows.append(f"{send_at:%Y-%m-%d %H:%M} -> {t['title']} "
+                    f"(acara {due:%Y-%m-%d %H:%M}, {mailer.fmt_lead(lead)}, "
+                    f"ke {', '.join(n for n, _ in who)})"
+                    + ("  [SUDAH LEWAT]" if send_at < now else ""))
+    if not rows:
+        return "belum ada pengingat terjadwal (to-do butuh tanggal + penerima)."
+    return "\n".join(sorted(rows))
+
+
+def tool_email_test(to: str = "") -> str:
+    """Send a test email, to check Brevo and the addresses are right."""
+    if not mailer.enabled():
+        return f"tidak bisa kirim: {mailer.why_disabled()}"
+    who = mailer.resolve_recipients(to)
+    if not who:
+        known = ", ".join(mailer.people().keys()) or "(MAIL_PEOPLE kosong)"
+        return f"tidak ada penerima yang cocok. yang terdaftar: {known}"
+    ok, detail = mailer.send(
+        who, "Tes pengingat Wedding Plan",
+        "<p>Halo! Ini email tes dari bot rencana nikah. "
+        "Kalau kamu baca ini, pengingat otomatis sudah jalan.</p>"
+        + (f'<p><a href="{mailer.esc(doc_url())}">Buka rencana</a></p>' if doc_url() else ""),
+        "Email tes dari bot rencana nikah.")
+    names = ", ".join(f"{n} <{e}>" for n, e in who)
+    return f"terkirim ke {names}" if ok else f"gagal kirim ke {names}: {detail}"
 
 
 def tool_task_delete(id: str) -> str:
@@ -424,6 +477,8 @@ TOOLS = {
     "task_add_many": tool_task_add_many,
     "task_update": tool_task_update,
     "task_delete": tool_task_delete,
+    "reminder_list": tool_reminder_list,
+    "email_test": tool_email_test,
     "notes_read": tool_notes_read,
     "notes_append": tool_notes_append,
 }
@@ -614,6 +669,16 @@ TOOL_SCHEMA = [
                     "due": {"type": "string", "description": "YYYY-MM-DD -- the day it lands on "
                                              "in the calendar. Always set it when the "
                                              "user names a day or deadline."},
+                    "time": {"type": "string", "description": "HH:MM, 24h. Optional; without it "
+                                                              "the to-do counts as due at the "
+                                                              "configured default hour."},
+                    "remind": {"type": "string", "description": "How far ahead to email: 15m, 2h, "
+                                                                "1d, 1w. 'off' to never remind. "
+                                                                "Leave empty for the default."},
+                    "remind_to": {"type": "string", "description": "Who to email, comma separated "
+                                                                   "(names from the address book, "
+                                                                   "e.g. 'dian' or 'rahmat,dian'). "
+                                                                   "Empty = the default recipients."},
                     "parent": {"type": "string"},
                 },
                 "required": ["title"],
@@ -657,6 +722,30 @@ TOOL_SCHEMA = [
                     "due": {"type": "string"},
                 },
                 "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reminder_list",
+            "description": "List the to-do email reminders that are still queued, soonest "
+                           "first. Use for 'pengingat apa aja', 'kapan aku diingetin', "
+                           "'reminder-nya jalan nggak'.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "email_test",
+            "description": "Send a test email to check the reminder plumbing works. Only use "
+                           "when the user explicitly asks to test email.",
+            "parameters": {
+                "type": "object",
+                "properties": {"to": {"type": "string",
+                                      "description": "names or addresses, comma separated; "
+                                                     "empty = the default recipients"}},
             },
         },
     },
@@ -971,7 +1060,8 @@ def handle_command(waha: "Waha", chat_id: str, prompt: str) -> bool:
     elif cmd in ("help", "bantuan"):
         reply = ("Perintah: /model (lihat & ganti model), /qr (link scan WhatsApp), /help.\n"
                  "Selain itu tanya biasa aja; aku bisa catat pemasukan/pengeluaran, "
-                 "baca dokumen, cari di web, dan baca foto.")
+                 "atur to-do di kalender (termasuk pengingat email), baca dokumen, "
+                 "cari di web, dan baca foto.")
     else:
         return False
     try:
@@ -1222,6 +1312,7 @@ def run_webhook(waha: "Waha") -> int:
                                   "application/json; charset=utf-8")
             return self._send(404, "not found")
 
+    start_reminders()
     srv = ThreadingHTTPServer((WEBHOOK_HOST, WEBHOOK_PORT), Handler)
     doc_link = f"{DOC_PUBLIC_BASE}/doc?token={DOC_TOKEN}" if DOC_PUBLIC_BASE else f"(set DOC_PUBLIC_BASE) /doc?token={DOC_TOKEN}"
     log(f"webhook server on {WEBHOOK_HOST}:{WEBHOOK_PORT}{WEBHOOK_PATH}  (trigger='{TRIGGER_PREFIX}')")
@@ -1277,6 +1368,89 @@ async function poll(){
 }
 refresh(); setInterval(refresh, 15000); poll();
 </script></body></html>""".replace("__TOK__", tok)
+
+
+# --------------------------------------------------------------------------
+# Reminder scheduler
+#
+# One background thread. Every REMIND_POLL_SECONDS it re-reads the plan and
+# mails about any to-do whose send-time has arrived. `notified` on the task
+# records which send-time was mailed, so editing the date or the lead re-arms
+# the reminder while a restart never re-sends the same one.
+# --------------------------------------------------------------------------
+
+def _pending_reminders() -> list[tuple]:
+    """(task, kids, due_at, send_at, lead, recipients) for every armed reminder."""
+    data = get_plan().read()
+    tasks = data.get("tasks") or []
+    out = []
+    for t in tasks:
+        if t.get("parent") or t.get("status") == "done":
+            continue
+        due = mailer.due_at(t)
+        if not due:
+            continue
+        lead = t.get("remind") or mailer.REMIND_DEFAULT_LEAD
+        td = mailer.parse_lead(lead)
+        if td is None:
+            continue
+        who = mailer.resolve_recipients(t.get("remind_to") or "")
+        if not who:
+            continue
+        kids = [k for k in tasks if k.get("parent") == t.get("id")]
+        out.append((t, kids, due, due - td, lead, who))
+    return out
+
+
+def _remind_key(send_at, lead: str) -> str:
+    return f"{send_at:%Y-%m-%dT%H:%M}|{lead}"
+
+
+def reminder_tick() -> int:
+    """Send whatever is due now. Returns how many mails went out."""
+    if not mailer.enabled():
+        return 0
+    now = datetime.now(mailer.tz())
+    sent = 0
+    for t, kids, due, send_at, lead, who in _pending_reminders():
+        key = _remind_key(send_at, lead)
+        if t.get("notified") == key or now < send_at:
+            continue
+        # Too late to be useful (added after the fact, or the bot was down):
+        # record it as handled so it never fires out of the blue later.
+        if now > due + timedelta(hours=1):
+            get_plan().task_update(t["id"], notified=key)
+            continue
+        subject, html, text = mailer.reminder_body(t, kids, due, lead, doc_url())
+        ok, detail = mailer.send(who, subject, html, text)
+        if ok:
+            get_plan().task_update(t["id"], notified=key)
+            sent += 1
+            log(f"reminder sent: '{t['title']}' -> {', '.join(e for _, e in who)}")
+        else:
+            log(f"reminder FAILED: '{t['title']}': {detail}")
+            obs.error("reminder-send", RuntimeError(detail),
+                      metadata={"task": t.get("title"), "to": [e for _, e in who]})
+    return sent
+
+
+def reminder_loop() -> None:
+    log(f"reminder scheduler on (every {mailer.REMIND_POLL_SECONDS}s, "
+        f"tz {mailer.TIMEZONE}, default {mailer.fmt_lead(mailer.REMIND_DEFAULT_LEAD)})")
+    while True:
+        try:
+            reminder_tick()
+        except Exception as e:  # noqa: BLE001
+            log("reminder loop error:", repr(e))
+            obs.error("reminder-loop", e)
+        time.sleep(mailer.REMIND_POLL_SECONDS)
+
+
+def start_reminders() -> None:
+    if not mailer.enabled():
+        log("reminder scheduler off:", mailer.why_disabled())
+        return
+    threading.Thread(target=reminder_loop, name="reminders", daemon=True).start()
 
 
 def _safe(fn, *a) -> None:

@@ -18,12 +18,17 @@ import html
 import json
 
 
-def render(token: str, title: str, entries: list, notes: str, tasks: list) -> str:
+def render(token: str, title: str, entries: list, notes: str, tasks: list,
+           mail: dict | None = None) -> str:
     payload = json.dumps({"entries": entries, "notes": notes, "tasks": tasks},
                          ensure_ascii=False)
+    cfg = json.dumps(mail or {"people": [], "default_lead": "1d", "default_to": "",
+                              "default_time": "09:00", "enabled": False, "why": ""},
+                     ensure_ascii=False)
     return (_PAGE
             .replace("__TITLE__", html.escape(title))
             .replace("__TOKEN__", html.escape(token))
+            .replace("__MAIL__", cfg.replace("</", "<\\/"))
             .replace("__DATA__", payload.replace("</", "<\\/")))
 
 
@@ -173,6 +178,10 @@ _PAGE = r"""<!doctype html>
   .ck.done .cx{text-decoration:line-through;color:var(--muted)}
   .ck .btn{padding:2px 6px}
   .trow{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
+  .whos{display:flex;gap:10px;flex-wrap:wrap;margin-top:2px}
+  .who{display:flex;align-items:center;gap:5px;font-size:13px;color:var(--fg);
+       border:1px solid var(--line);border-radius:8px;padding:5px 9px;cursor:pointer}
+  .who input{width:15px;height:15px;accent-color:var(--accent)}
   .chip{font-size:11px;color:var(--muted);background:#0b0d11;border:1px solid var(--line);
         border-radius:999px;padding:2px 8px}
   .chip.pr{color:var(--in);border-color:#20392c}
@@ -294,6 +303,7 @@ _PAGE = r"""<!doctype html>
 <script>
 const TOKEN = "__TOKEN__";
 let DATA = __DATA__;
+const MAIL = __MAIL__;
 DATA.entries = DATA.entries || []; DATA.tasks = DATA.tasks || [];
 DATA.entries.forEach(e=>{ if(!e.parent) e.parent=''; });
 DATA.tasks.forEach(t=>{ if(!t.parent) t.parent=''; });
@@ -496,6 +506,13 @@ function shift(n){ CUR = CALMODE==='month'
   renderBoard(); }
 function today(){ CUR=new Date(); renderBoard(); }
 
+/* true when the scheduler would mail about this to-do */
+function armed(t){
+  if(!MAIL.enabled || !t.due || t.status==='done') return false;
+  const lead=(t.remind||MAIL.default_lead||'');
+  if(lead==='off') return false;
+  return !!((t.remind_to||'').trim() || (MAIL.default_to||'').trim());
+}
 function pillHtml(t){
   const st=KST[t.status]||KST.todo, ks=tKids(t.id), done=ks.filter(k=>k.status==='done').length;
   return '<button class="pill'+(t.status==='done'?' done':'')+'" draggable="true"'+
@@ -503,6 +520,7 @@ function pillHtml(t){
     ' ondragstart="dstart(event,\'' + t.id + '\')" ondragend="dend(event)"'+
     ' onclick="openTask(\'' + t.id + '\')">'+
     '<span class="pt">'+esc(t.title||'(tanpa judul)')+'</span>'+
+    (armed(t)?'<span class="pc" title="ada pengingat email">&#9993;</span>':'')+
     (ks.length?'<span class="pc">'+done+'/'+ks.length+'</span>':'')+'</button>';
 }
 function dayCell(d, outside){
@@ -578,8 +596,14 @@ function renderDrw(){
     '<label>Judul</label>'+
     '<input value="'+esc(c.title)+'" placeholder="mis. Cari venue" oninput="tupd(\'' + c.id + '\',\'title\',this.value)">'+
     '<label>Status</label><div class="stsel">'+sts+'</div>'+
-    '<label>Tanggal</label>'+
-    '<input type="date" value="'+esc(c.due)+'" onchange="setDue(\'' + c.id + '\',this.value)">'+
+    '<label>Tanggal &amp; jam</label>'+
+    '<div class="trow" style="margin:0">'+
+      '<input style="flex:2;min-width:140px" type="date" value="'+esc(c.due)+'" '+
+        'onchange="setDue(\'' + c.id + '\',this.value)">'+
+      '<input style="flex:1;min-width:96px" type="time" value="'+esc(c.time)+'" '+
+        'onchange="setTime(\'' + c.id + '\',this.value)" title="kosong = jam '+esc(MAIL.default_time)+'">'+
+    '</div>'+
+    remindHtml(c)+
     '<label>Kategori</label>'+
     '<input value="'+esc(c.category)+'" placeholder="mis. akad" oninput="tupd(\'' + c.id + '\',\'category\',this.value)">'+
     '<label>Catatan</label>'+
@@ -594,6 +618,42 @@ function renderDrw(){
 /* edits that change where/how a pill is drawn redraw the calendar too; typing
    in a text field only updates DATA, so the input never loses focus. */
 function tupd(id,k,v){ const t=tById(id); if(!t) return; t[k]=v; }
+function setTime(id,v){ tupd(id,'time',v); renderDrw(); }
+
+/* ---- reminder controls (email, via Brevo) ---- */
+const LEADS=[['','default ('+(MAIL.default_lead||'1d')+')'],['off','jangan ingatkan'],
+             ['15m','15 menit'],['30m','30 menit'],['1h','1 jam'],['3h','3 jam'],
+             ['1d','1 hari'],['2d','2 hari'],['1w','1 minggu']];
+function remindHtml(c){
+  if(!MAIL.enabled)
+    return '<label>Pengingat</label><div class="muted" style="font-size:12px">'+
+           'email mati: '+esc(MAIL.why||'belum dikonfigurasi')+'</div>';
+  const to=(c.remind_to||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
+  const opts=LEADS.map(function(l){
+    return '<option value="'+l[0]+'"'+((c.remind||'')===l[0]?' selected':'')+'>'+l[1]+'</option>';
+  }).join('');
+  const who=(MAIL.people||[]).map(function(n){
+    const on=to.length?to.indexOf(n)!==-1:false;
+    return '<label class="who"><input type="checkbox" '+(on?'checked':'')+
+      ' onchange="setWho(\''+c.id+'\',\''+n+'\',this.checked)"> '+esc(n)+'</label>';
+  }).join('') || '<span class="muted" style="font-size:12px">MAIL_PEOPLE belum diisi</span>';
+  const note = !c.due ? 'kasih tanggal dulu biar bisa diingatkan'
+    : (c.remind==='off' ? 'pengingat dimatikan untuk to-do ini'
+    : (to.length?'':'belum dipilih &rarr; pakai default ('+esc(MAIL.default_to||'tidak ada')+')'));
+  return '<label>Pengingat email</label>'+
+    '<select onchange="setRemind(\''+c.id+'\',this.value)">'+opts+'</select>'+
+    '<div class="whos">'+who+'</div>'+
+    (note?'<div class="muted" style="font-size:12px">'+note+'</div>':'');
+}
+function setRemind(id,v){ tupd(id,'remind',v); renderDrw(); }
+function setWho(id,name,on){
+  const t=tById(id); if(!t) return;
+  const cur=(t.remind_to||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const i=cur.map(s=>s.toLowerCase()).indexOf(name);
+  if(on && i===-1) cur.push(name);
+  if(!on && i!==-1) cur.splice(i,1);
+  t.remind_to=cur.join(','); renderDrw();
+}
 function setStatus(id,v){ tupd(id,'status',v); renderDrw(); renderBoard(); }
 function setDue(id,v){ tupd(id,'due',v); renderBoard(); }
 function tgl(id,on){ const t=tById(id); if(!t) return; t.status=on?'done':'todo'; renderDrw(); renderBoard(); }

@@ -64,6 +64,21 @@ services:
       DOC_TITLE: ${DOC_TITLE:-Wedding Plan}
       # models switchable from chat via `@bang /model ...`
       MODEL_CHOICES: ${MODEL_CHOICES:-openai/gpt-5.4-mini,openai/gpt-5.4}
+      # email reminders (optional; no-ops when BREVO_API_KEY is unset)
+      BREVO_API_KEY: ${BREVO_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp-relay.brevo.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_LOGIN: ${SMTP_LOGIN:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      MAIL_FROM_EMAIL: ${MAIL_FROM_EMAIL:-}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-Wedding Planner}
+      MAIL_PEOPLE: ${MAIL_PEOPLE:-}
+      MAIL_TO_DEFAULT: ${MAIL_TO_DEFAULT:-}
+      REMIND_DEFAULT_LEAD: ${REMIND_DEFAULT_LEAD:-1d}
+      REMIND_DEFAULT_TIME: ${REMIND_DEFAULT_TIME:-09:00}
+      REMIND_POLL_SECONDS: ${REMIND_POLL_SECONDS:-60}
+      REMIND_ENABLED: ${REMIND_ENABLED:-true}
+      TIMEZONE: ${TIMEZONE:-Asia/Jakarta}
       # observability (optional; no-ops when unset)
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
