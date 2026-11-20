@@ -343,7 +343,7 @@ def tool_budget_delete(id: str) -> str:
 
 
 def tool_task_board(status: str = "") -> str:
-    """The whole to-do board (or one column), with ids and checklist progress."""
+    """Every to-do grouped by due date (or only those in one status)."""
     return get_plan().tasks_text(status=status.strip().lower()) + f"\n\nlink: {doc_url()}"
 
 
@@ -587,10 +587,11 @@ TOOL_SCHEMA = [
         "type": "function",
         "function": {
             "name": "task_board",
-            "description": "Read the wedding to-do board (kanban). Columns: todo (Rencana), "
-                           "doing (Proses), done (Selesai). Shows each card's id, checklist "
-                           "progress, due date. Use for 'apa aja yang harus dilakukan', "
-                           "'checklist kita apa', 'udah sampai mana'.",
+            "description": "Read the wedding to-do list. It is shown as a calendar: each "
+                           "to-do sits on its `due` date, and status is only a colour -- "
+                           "todo (Rencana), doing (Proses), done (Selesai). Output is grouped "
+                           "by date, undated first, with ids and checklist progress. Use for "
+                           "'apa aja yang harus dilakukan', 'agenda minggu ini', 'udah sampai mana'.",
             "parameters": {
                 "type": "object",
                 "properties": {"status": {"type": "string", "enum": ["todo", "doing", "done"]}},
@@ -610,7 +611,9 @@ TOOL_SCHEMA = [
                     "detail": {"type": "string"},
                     "status": {"type": "string", "enum": ["todo", "doing", "done"]},
                     "category": {"type": "string", "description": "e.g. akad, resepsi, dokumen"},
-                    "due": {"type": "string", "description": "YYYY-MM-DD"},
+                    "due": {"type": "string", "description": "YYYY-MM-DD -- the day it lands on "
+                                             "in the calendar. Always set it when the "
+                                             "user names a day or deadline."},
                     "parent": {"type": "string"},
                 },
                 "required": ["title"],

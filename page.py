@@ -115,43 +115,72 @@ _PAGE = r"""<!doctype html>
   textarea{min-height:120px;font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
   .ok{color:var(--in);font-size:14px}
 
-  /* kanban */
-  .board{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-items:start}
-  .col{background:#12161d;border:1px solid var(--line);border-radius:12px;display:flex;
-       flex-direction:column;min-height:160px}
-  .col.over{border-color:var(--accent);background:#141c2b}
-  .colhead{display:flex;align-items:center;gap:8px;padding:11px 12px;border-bottom:1px solid var(--line)}
-  .colhead .dot{width:8px;height:8px;border-radius:50%}
-  .colhead .n{font-weight:700;font-size:14px}
-  .colhead .c{margin-left:auto;color:var(--muted);font-size:12px}
-  .collist{padding:10px;display:flex;flex-direction:column;gap:10px}
-  .tcard{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;cursor:grab}
-  .tcard.drag{opacity:.45}
-  .tcard .th{display:flex;align-items:flex-start;gap:8px}
-  .tcard .tt{flex:1;font-size:14px;font-weight:600;line-height:1.35;word-break:break-word}
-  .tcard .meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;align-items:center}
-  .chip{font-size:11px;color:var(--muted);background:#0b0d11;border:1px solid var(--line);
-        border-radius:999px;padding:2px 8px}
-  .chip.due{color:var(--warn);border-color:#3a3220}
-  .chip.pr{color:var(--in);border-color:#20392c}
-  .tbody{margin-top:9px;border-top:1px solid var(--line);padding-top:9px;display:none}
-  .tcard.open .tbody{display:block}
+  /* ---- calendar to-do ---- */
+  .calbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}
+  .calbar .ttl{font-weight:700;font-size:16px;min-width:170px}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .seg button{background:transparent;border:0;color:var(--muted);padding:6px 13px;font-size:12px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#fff}
+  .cal{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#12161d}
+  .calhead{display:grid;grid-template-columns:repeat(7,1fr);background:#0f1319}
+  .calhead div{padding:8px 6px;font-size:12px;color:var(--muted);font-weight:600;text-align:center}
+  .calgrid{display:grid;grid-template-columns:repeat(7,1fr)}
+  .day{border-top:1px solid var(--line);border-left:1px solid var(--line);min-height:108px;
+       padding:6px;display:flex;flex-direction:column;gap:4px;position:relative}
+  .day:nth-child(7n+1){border-left:0}
+  .day.out{background:#0e1116}
+  .day.out .dn{opacity:.4}
+  .day.over{background:#141c2b;box-shadow:inset 0 0 0 1px var(--accent)}
+  .dn{font-size:12px;color:var(--muted);width:22px;height:22px;display:flex;
+      align-items:center;justify-content:center;flex:0 0 auto}
+  .day.today .dn{background:var(--accent);color:#fff;border-radius:50%;font-weight:700}
+  .day .plus{position:absolute;top:4px;right:4px;opacity:0;background:transparent;border:0;
+       color:var(--muted);font-size:14px;cursor:pointer;line-height:1;padding:2px 4px}
+  .day:hover .plus{opacity:1}
+  .day .plus:hover{color:var(--fg)}
+  .pill{display:flex;align-items:center;gap:6px;background:var(--card);border:1px solid var(--line);
+        border-left:3px solid var(--muted);border-radius:6px;padding:4px 6px;font-size:12px;
+        cursor:pointer;text-align:left;width:100%;color:var(--fg)}
+  .pill:hover{border-color:var(--accent)}
+  .pill .pt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pill .pc{font-size:10px;color:var(--muted);flex:0 0 auto}
+  .pill.done .pt{text-decoration:line-through;color:var(--muted)}
+  .cal.week .day{min-height:300px}
+  .more{font-size:11px;color:var(--muted);background:transparent;border:0;cursor:pointer;text-align:left;padding:1px 2px}
+  .nodate{margin-top:16px}
+  .nodate .list{display:flex;flex-wrap:wrap;gap:8px}
+  .nodate .pill{width:auto;max-width:280px}
+
+  /* detail drawer */
+  .ov{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;display:none}
+  .ov.on{display:block}
+  .drw{position:fixed;top:0;right:0;bottom:0;width:min(430px,100%);background:#12161d;
+       border-left:1px solid var(--line);z-index:51;transform:translateX(102%);
+       transition:transform .18s ease;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+  .drw.on{transform:none}
+  .drw h3{margin:0;font-size:15px;display:flex;align-items:center;gap:8px}
+  .drw h3 .x{margin-left:auto}
+  .drw label{font-size:12px;color:var(--muted)}
+  .stsel{display:flex;gap:6px;flex-wrap:wrap}
+  .stsel button{flex:1;min-width:92px;background:transparent;border:1px solid var(--line);
+        color:var(--muted);border-radius:8px;padding:8px;font-size:12px;cursor:pointer;
+        display:flex;align-items:center;justify-content:center;gap:6px}
+  .stsel button .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+  .stsel button.on{color:#fff;border-width:2px}
   .ck{display:flex;align-items:center;gap:8px;padding:3px 0}
   .ck input[type=checkbox]{width:16px;height:16px;flex:0 0 16px;accent-color:var(--accent)}
   .ck .cx{flex:1;font-size:13px;background:transparent;border:0;padding:2px;color:var(--fg)}
   .ck.done .cx{text-decoration:line-through;color:var(--muted)}
   .ck .btn{padding:2px 6px}
-  .trow{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
-  .trow .btn{flex:0 0 auto}
-  .addcard{margin:0 10px 10px;border:1px dashed var(--line);color:var(--muted);background:transparent;
-           border-radius:10px;padding:9px;cursor:pointer;font-size:13px}
-  .addcard:hover{border-color:var(--accent);color:var(--fg)}
+  .trow{display:flex;gap:6px;margin-top:4px;flex-wrap:wrap}
+  .chip{font-size:11px;color:var(--muted);background:#0b0d11;border:1px solid var(--line);
+        border-radius:999px;padding:2px 8px}
+  .chip.pr{color:var(--in);border-color:#20392c}
 
   /* save bar */
   .savebar{position:sticky;bottom:0;background:linear-gradient(180deg,rgba(15,17,21,0),var(--bg) 40%);
            padding:14px 18px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 
-  @media (max-width: 900px){ .board{grid-template-columns:1fr} }
   @media (max-width: 760px){
     .app{flex-direction:column}
     .side{width:auto;flex:none;height:auto;position:sticky;top:0;z-index:20;
@@ -172,7 +201,18 @@ _PAGE = r"""<!doctype html>
     tr.sub td.ic{padding-left:0}
     tbody tr.sub td,tbody tr.hask td{border-bottom:0}
     td.amt input{text-align:left}
-    .tcard{cursor:default}
+    .cal{border-radius:10px}
+    .calhead div{font-size:10px;padding:6px 2px}
+    .day{min-height:62px;padding:3px;gap:2px}
+    .day .plus{display:none}
+    .pill{padding:2px 4px;font-size:10px;border-left-width:4px}
+    .pill .pt,.pill .pc{display:none}
+    .pill{height:7px;border-radius:3px;border-top:0;border-bottom:0;border-right:0}
+    .cal.week .day{min-height:120px}
+    .cal.week .pill{height:auto;border:1px solid var(--line);border-left:3px solid var(--muted);
+         border-radius:6px;padding:4px 6px;font-size:12px}
+    .cal.week .pill .pt{display:block}
+    .calbar .ttl{min-width:0;flex:1}
   }
 </style></head>
 <body>
@@ -217,11 +257,26 @@ _PAGE = r"""<!doctype html>
 
       <!-- ============== TO-DO ============== -->
       <section id="v-kan" class="view">
-        <div class="bar">
-          <input id="ksearch" placeholder="cari to-do..." oninput="KQ=this.value;renderBoard()" style="max-width:280px">
-          <span class="muted">Seret kartu antar kolom (di HP pakai tombol &lsaquo; &rsaquo;) &middot; klik kartu untuk rincian</span>
+        <div class="calbar">
+          <button class="btn" onclick="shift(-1)">&lsaquo;</button>
+          <button class="btn" onclick="today()">Hari ini</button>
+          <button class="btn" onclick="shift(1)">&rsaquo;</button>
+          <span class="ttl" id="caltitle"></span>
+          <div class="seg">
+            <button id="seg-week" onclick="setMode('week')">Minggu</button>
+            <button id="seg-month" onclick="setMode('month')">Bulan</button>
+          </div>
+          <input id="ksearch" placeholder="cari to-do..." oninput="KQ=this.value;renderBoard()" style="max-width:220px">
         </div>
-        <div class="board" id="board"></div>
+        <div class="cal" id="cal">
+          <div class="calhead" id="calhead"></div>
+          <div class="calgrid" id="calgrid"></div>
+        </div>
+        <div class="nodate">
+          <h2 style="margin-bottom:8px">Tanpa tanggal <span class="chip" id="nd-ct"></span></h2>
+          <div class="list" id="nodate"></div>
+          <button class="btn" style="margin-top:8px" onclick="addTask('')">+ to-do tanpa tanggal</button>
+        </div>
       </section>
 
     </div>
@@ -233,6 +288,8 @@ _PAGE = r"""<!doctype html>
     </div>
   </main>
 </div>
+<div class="ov" id="ov" onclick="closeDrw()"></div>
+<div class="drw" id="drw"></div>
 
 <script>
 const TOKEN = "__TOKEN__";
@@ -401,99 +458,164 @@ function addSub(pid){ const p=byId(pid); if(!p) return;
   SUBOPEN.add(pid); saveOpen(); render(); }
 function del(id){ DATA.entries=DATA.entries.filter(e=>e.id!==id&&e.parent!==id); render(); }
 
-/* ================= TO-DO (kanban) ================= */
-const KCOLS=[['todo','Rencana','#6b7280'],['doing','Proses','#2f6df6'],['done','Selesai','#39d98a']];
-let KQ='', OPEN={};
+/* ================= TO-DO (calendar) =================
+   Tasks live on a calendar keyed by `due`. Status is no longer a column --
+   it is a coloured state shown on the pill and edited in the detail drawer.
+   A task with a parent is a checklist item inside that parent, never a pill. */
+const KST={todo:['Rencana','#6b7280'],doing:['Proses','#2f6df6'],done:['Selesai','#39d98a']};
+const KORDER=['todo','doing','done'];
+const DAYS=['Sen','Sel','Rab','Kam','Jum','Sab','Min'];
+const MONTHS=['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus',
+              'September','Oktober','November','Desember'];
+let KQ='', CALMODE='month', CUR=new Date(), SEL=null, EXPDAY={};
+
 const tById = id => DATA.tasks.find(t=>t.id===id);
 const tKids = id => DATA.tasks.filter(t=>t.parent===id);
-const cards = st => DATA.tasks.filter(t=>!t.parent && t.status===st);
+const pad2 = n => (n<10?'0':'')+n;
+const iso = d => d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());
+const dayAdd = (d,n) => { const x=new Date(d); x.setDate(x.getDate()+n); return x; };
+function weekStart(d){ const x=new Date(d); x.setHours(0,0,0,0);
+  x.setDate(x.getDate()-((x.getDay()+6)%7)); return x; }   /* weeks start Monday */
 
-function updateKanCount(){
-  const open=DATA.tasks.filter(t=>!t.parent&&t.status!=='done').length;
-  document.getElementById('kan-ct').textContent=open;
-}
 function matches(c){
   const q=KQ.trim().toLowerCase(); if(!q) return true;
   const hit=o=>((o.title||'')+' '+(o.detail||'')+' '+(o.category||'')).toLowerCase().indexOf(q)!==-1;
   return hit(c)||tKids(c.id).some(hit);
 }
-function cardHtml(c){
-  const ks=tKids(c.id), done=ks.filter(k=>k.status==='done').length;
-  const idx=KCOLS.findIndex(x=>x[0]===c.status);
-  const chips=[];
-  if(ks.length) chips.push('<span class="chip pr">'+done+'/'+ks.length+'</span>');
-  if(c.category) chips.push('<span class="chip">#'+esc(c.category)+'</span>');
-  if(c.due) chips.push('<span class="chip due">'+esc(c.due)+'</span>');
-  const ck=ks.map(function(k){
-    return '<div class="ck'+(k.status==='done'?' done':'')+'">'+
-      '<input type="checkbox" '+(k.status==='done'?'checked':'')+' onchange="tgl(\''+k.id+'\',this.checked)">'+
-      '<input class="cx" value="'+esc(k.title)+'" oninput="tupd(\''+k.id+'\',\'title\',this.value)">'+
-      '<button class="btn del" onclick="tdel(\''+k.id+'\')">&#10005;</button></div>'; }).join('');
-  return '<div class="tcard'+(OPEN[c.id]?' open':'')+'" draggable="true" data-id="'+c.id+'"'+
-    ' ondragstart="dstart(event,\''+c.id+'\')" ondragend="dend(event)">'+
-    '<div class="th" onclick="toggleCard(event,\''+c.id+'\')">'+
-      '<div class="tt">'+esc(c.title)+'</div></div>'+
-    (chips.length?'<div class="meta">'+chips.join('')+'</div>':'')+
-    '<div class="tbody">'+
-      '<input value="'+esc(c.title)+'" oninput="tupd(\''+c.id+'\',\'title\',this.value)" placeholder="judul">'+
-      '<textarea style="min-height:60px;margin-top:6px" placeholder="catatan..." '+
-        'oninput="tupd(\''+c.id+'\',\'detail\',this.value)">'+esc(c.detail)+'</textarea>'+
-      '<div class="trow">'+
-        '<input style="flex:1;min-width:110px" value="'+esc(c.category)+'" placeholder="kategori" '+
-          'oninput="tupd(\''+c.id+'\',\'category\',this.value)">'+
-        '<input style="flex:1;min-width:140px" type="date" value="'+esc(c.due)+'" '+
-          'oninput="tupd(\''+c.id+'\',\'due\',this.value)">'+
-      '</div>'+
-      (ck?'<div style="margin-top:8px">'+ck+'</div>':'')+
-      '<div class="trow">'+
-        '<button class="btn" onclick="addCk(\''+c.id+'\')">+ checklist</button>'+
-        '<button class="btn" '+(idx<=0?'disabled':'')+' onclick="move(\''+c.id+'\',-1)">&lsaquo;</button>'+
-        '<button class="btn" '+(idx>=KCOLS.length-1?'disabled':'')+' onclick="move(\''+c.id+'\',1)">&rsaquo;</button>'+
-        '<button class="btn del" onclick="tdel(\''+c.id+'\')">Hapus</button>'+
-      '</div>'+
-    '</div></div>';
+const topTasks = () => DATA.tasks.filter(t=>!t.parent && matches(t));
+const tasksOn  = ds => topTasks().filter(t=>(t.due||'')===ds);
+
+function updateKanCount(){
+  const open=DATA.tasks.filter(t=>!t.parent&&t.status!=='done').length;
+  document.getElementById('kan-ct').textContent=open;
+}
+function setMode(m){ CALMODE=m; renderBoard(); }
+function shift(n){ CUR = CALMODE==='month'
+    ? new Date(CUR.getFullYear(), CUR.getMonth()+n, 1)
+    : dayAdd(CUR, 7*n);
+  renderBoard(); }
+function today(){ CUR=new Date(); renderBoard(); }
+
+function pillHtml(t){
+  const st=KST[t.status]||KST.todo, ks=tKids(t.id), done=ks.filter(k=>k.status==='done').length;
+  return '<button class="pill'+(t.status==='done'?' done':'')+'" draggable="true"'+
+    ' style="border-left-color:'+st[1]+'" title="'+esc(t.title)+' - '+st[0]+'"'+
+    ' ondragstart="dstart(event,\'' + t.id + '\')" ondragend="dend(event)"'+
+    ' onclick="openTask(\'' + t.id + '\')">'+
+    '<span class="pt">'+esc(t.title||'(tanpa judul)')+'</span>'+
+    (ks.length?'<span class="pc">'+done+'/'+ks.length+'</span>':'')+'</button>';
+}
+function dayCell(d, outside){
+  const ds=iso(d), list=tasksOn(ds), isToday=ds===iso(new Date());
+  const cap = CALMODE==='week' ? 99 : (EXPDAY[ds]?99:3);
+  const shown=list.slice(0,cap), rest=list.length-shown.length;
+  return '<div class="day'+(outside?' out':'')+(isToday?' today':'')+'" id="d-'+ds+'"'+
+    ' ondragover="dover(event,\'' + ds + '\')" ondragleave="dleave(\'' + ds + '\')"'+
+    ' ondrop="drop(event,\'' + ds + '\')">'+
+    '<div class="dn">'+d.getDate()+'</div>'+
+    '<button class="plus" title="tambah to-do" onclick="addTask(\'' + ds + '\')">+</button>'+
+    shown.map(pillHtml).join('')+
+    (rest>0?'<button class="more" onclick="EXPDAY[\'' + ds + '\']=1;renderBoard()">+'+rest+' lagi</button>':'')+
+    '</div>';
 }
 function renderBoard(){
-  document.getElementById('board').innerHTML=KCOLS.map(function(col){
-    const list=cards(col[0]).filter(matches);
-    return '<div class="col" id="col-'+col[0]+'" ondragover="dover(event,\''+col[0]+'\')" '+
-      'ondragleave="dleave(\''+col[0]+'\')" ondrop="drop(event,\''+col[0]+'\')">'+
-      '<div class="colhead"><span class="dot" style="background:'+col[2]+'"></span>'+
-        '<span class="n">'+col[1]+'</span><span class="c">'+list.length+'</span></div>'+
-      '<div class="collist">'+(list.map(cardHtml).join('')||'<div class="empty" style="padding:14px">kosong</div>')+'</div>'+
-      '<button class="addcard" onclick="addCard(\''+col[0]+'\')">+ tambah</button></div>';
-  }).join('');
+  const cal=document.getElementById('cal');
+  cal.className='cal'+(CALMODE==='week'?' week':'');
+  document.getElementById('calhead').innerHTML=DAYS.map(d=>'<div>'+d+'</div>').join('');
+  document.getElementById('seg-week').className  = CALMODE==='week'?'on':'';
+  document.getElementById('seg-month').className = CALMODE==='month'?'on':'';
+
+  let cells='', title='';
+  if(CALMODE==='month'){
+    const first=new Date(CUR.getFullYear(),CUR.getMonth(),1);
+    const start=weekStart(first);
+    const lead=(first.getDay()+6)%7, days=new Date(CUR.getFullYear(),CUR.getMonth()+1,0).getDate();
+    const weeks=Math.ceil((lead+days)/7);
+    for(let n=0;n<weeks*7;n++){ const d=dayAdd(start,n);
+      cells+=dayCell(d, d.getMonth()!==CUR.getMonth()); }
+    title=MONTHS[CUR.getMonth()]+' '+CUR.getFullYear();
+  }else{
+    const start=weekStart(CUR), endd=dayAdd(start,6);
+    for(let n=0;n<7;n++) cells+=dayCell(dayAdd(start,n), false);
+    title=start.getDate()+' '+MONTHS[start.getMonth()].slice(0,3)+' &ndash; '+
+          endd.getDate()+' '+MONTHS[endd.getMonth()].slice(0,3)+' '+endd.getFullYear();
+  }
+  document.getElementById('calgrid').innerHTML=cells;
+  document.getElementById('caltitle').innerHTML=title;
+
+  const nd=topTasks().filter(t=>!t.due);
+  document.getElementById('nodate').innerHTML = nd.map(pillHtml).join('') ||
+    '<span class="muted">semua to-do sudah punya tanggal.</span>';
+  document.getElementById('nd-ct').textContent=nd.length;
   updateKanCount();
 }
-function toggleCard(ev,id){
-  if(ev.target.closest('input,textarea,button,select')) return;
-  OPEN[id]=!OPEN[id]; renderBoard();
+
+/* ---- detail drawer ---- */
+function openTask(id){ SEL=id; renderDrw();
+  document.getElementById('ov').classList.add('on');
+  document.getElementById('drw').classList.add('on'); }
+function closeDrw(){ SEL=null;
+  document.getElementById('ov').classList.remove('on');
+  document.getElementById('drw').classList.remove('on');
+  renderBoard(); }
+function renderDrw(){
+  const c=SEL?tById(SEL):null; const el=document.getElementById('drw');
+  if(!c){ el.innerHTML=''; return; }
+  const ks=tKids(c.id), done=ks.filter(k=>k.status==='done').length;
+  const sts=KORDER.map(function(k){ const st=KST[k];
+    return '<button class="'+(c.status===k?'on':'')+'" style="color:'+st[1]+
+      (c.status===k?';border-color:'+st[1]+';background:'+st[1]+'22':'')+'"'+
+      ' onclick="setStatus(\'' + c.id + '\',\'' + k + '\')">'+
+      '<span class="dot"></span>'+st[0]+'</button>'; }).join('');
+  const ck=ks.map(function(k){
+    return '<div class="ck'+(k.status==='done'?' done':'')+'">'+
+      '<input type="checkbox" '+(k.status==='done'?'checked':'')+
+        ' onchange="tgl(\'' + k.id + '\',this.checked)">'+
+      '<input class="cx" value="'+esc(k.title)+'" oninput="tupd(\'' + k.id + '\',\'title\',this.value)">'+
+      '<button class="btn del" onclick="tdel(\'' + k.id + '\')">&#10005;</button></div>'; }).join('');
+  el.innerHTML=
+    '<h3>Rincian to-do <button class="btn x" onclick="closeDrw()">&#10005;</button></h3>'+
+    '<label>Judul</label>'+
+    '<input value="'+esc(c.title)+'" placeholder="mis. Cari venue" oninput="tupd(\'' + c.id + '\',\'title\',this.value)">'+
+    '<label>Status</label><div class="stsel">'+sts+'</div>'+
+    '<label>Tanggal</label>'+
+    '<input type="date" value="'+esc(c.due)+'" onchange="setDue(\'' + c.id + '\',this.value)">'+
+    '<label>Kategori</label>'+
+    '<input value="'+esc(c.category)+'" placeholder="mis. akad" oninput="tupd(\'' + c.id + '\',\'category\',this.value)">'+
+    '<label>Catatan</label>'+
+    '<textarea style="min-height:90px" placeholder="catatan..." oninput="tupd(\'' + c.id + '\',\'detail\',this.value)">'+esc(c.detail)+'</textarea>'+
+    '<label>Checklist '+(ks.length?'<span class="chip pr">'+done+'/'+ks.length+'</span>':'')+'</label>'+
+    '<div>'+(ck||'<span class="muted" style="font-size:12px">belum ada.</span>')+'</div>'+
+    '<div class="trow">'+
+      '<button class="btn" onclick="addCk(\'' + c.id + '\')">+ checklist</button>'+
+      '<button class="btn del" onclick="tdel(\'' + c.id + '\');closeDrw()">Hapus to-do</button>'+
+    '</div>';
 }
-function tupd(id,k,v){ const t=tById(id); if(!t) return; t[k]=v;
-  if(k==='title'||k==='category'||k==='due') { /* re-render on blur only to keep focus */ } }
-function tgl(id,on){ const t=tById(id); if(!t) return; t.status=on?'done':'todo'; renderBoard(); }
-function move(id,d){ const t=tById(id); if(!t) return;
-  const i=KCOLS.findIndex(x=>x[0]===t.status), n=Math.min(KCOLS.length-1,Math.max(0,i+d));
-  t.status=KCOLS[n][0]; renderBoard(); }
-function addCard(st){ const id=tmp();
-  DATA.tasks.push({id:id,title:'',detail:'',status:st,category:'',due:'',parent:''});
-  OPEN[id]=true; renderBoard();
-  const el=document.querySelector('[data-id="'+id+'"] .tbody input'); if(el) el.focus(); }
+/* edits that change where/how a pill is drawn redraw the calendar too; typing
+   in a text field only updates DATA, so the input never loses focus. */
+function tupd(id,k,v){ const t=tById(id); if(!t) return; t[k]=v; }
+function setStatus(id,v){ tupd(id,'status',v); renderDrw(); renderBoard(); }
+function setDue(id,v){ tupd(id,'due',v); renderBoard(); }
+function tgl(id,on){ const t=tById(id); if(!t) return; t.status=on?'done':'todo'; renderDrw(); renderBoard(); }
+function addTask(due){ const id=tmp();
+  DATA.tasks.push({id:id,title:'',detail:'',status:'todo',category:'',due:due||'',parent:''});
+  renderBoard(); openTask(id);
+  const el=document.querySelector('#drw input'); if(el) el.focus(); }
 function addCk(pid){ const p=tById(pid); if(!p) return;
   DATA.tasks.push({id:tmp(),title:'',detail:'',status:'todo',category:'',due:'',parent:pid});
-  OPEN[pid]=true; renderBoard(); }
-function tdel(id){ DATA.tasks=DATA.tasks.filter(t=>t.id!==id&&t.parent!==id); renderBoard(); }
+  renderDrw(); renderBoard(); }
+function tdel(id){ DATA.tasks=DATA.tasks.filter(t=>t.id!==id&&t.parent!==id); renderDrw(); renderBoard(); }
 
+/* ---- drag a pill onto another day to reschedule ---- */
 let DRAG=null;
 function dstart(ev,id){ DRAG=id; ev.dataTransfer.effectAllowed='move';
-  try{ev.dataTransfer.setData('text/plain',id);}catch(e){}
-  ev.currentTarget.classList.add('drag'); }
-function dend(ev){ ev.currentTarget.classList.remove('drag'); DRAG=null; }
-function dover(ev,st){ ev.preventDefault(); const c=document.getElementById('col-'+st); if(c)c.classList.add('over'); }
-function dleave(st){ const c=document.getElementById('col-'+st); if(c)c.classList.remove('over'); }
-function drop(ev,st){ ev.preventDefault();
+  try{ev.dataTransfer.setData('text/plain',id);}catch(e){} }
+function dend(ev){ DRAG=null; }
+function dover(ev,ds){ ev.preventDefault(); const c=document.getElementById('d-'+ds); if(c)c.classList.add('over'); }
+function dleave(ds){ const c=document.getElementById('d-'+ds); if(c)c.classList.remove('over'); }
+function drop(ev,ds){ ev.preventDefault();
   const id=DRAG||(ev.dataTransfer?ev.dataTransfer.getData('text/plain'):'');
-  const t=id?tById(id):null; if(t){ t.status=st; } DRAG=null; renderBoard(); }
+  const t=id?tById(id):null; if(t) t.due=ds; DRAG=null; renderBoard(); }
 
 /* ================= save ================= */
 async function save(){

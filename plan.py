@@ -25,7 +25,8 @@ import uuid
 KINDS = ("income", "expense")
 STATUSES = ("actual", "expected")
 
-# Kanban columns for the to-do board. A task with a parent is a checklist item
+# Status of a to-do. The web view shows these as colours on a calendar (the
+# card's `due` date is what places it). A task with a parent is a checklist item
 # inside its parent's card rather than a card of its own.
 TASK_STATES = ("todo", "doing", "done")
 TASK_LABELS = {"todo": "Rencana", "doing": "Proses", "done": "Selesai"}
@@ -177,10 +178,10 @@ class PlanStore:
                 return True
         return False
 
-    # ---------------------------------------------------------- tasks (kanban)
+    # -------------------------------------------------------- tasks (calendar)
 
     def replace_tasks(self, tasks: list) -> None:
-        """Full save from the board."""
+        """Full save from the to-do view."""
         with self._lock:
             data = self._read_locked()
             cleaned, idmap = [], {}
@@ -222,6 +223,13 @@ class PlanStore:
         with self._lock:
             data = self._read_locked()
             pid = _resolve_task(data["tasks"], parent)
+            if parent.strip() and not pid:
+                # No such card yet -- make it, so the batch lands as its
+                # checklist instead of silently becoming loose to-dos.
+                card = _clean_task({"id": uuid.uuid4().hex[:8], "title": parent.strip(),
+                                    "status": status, "category": category, "parent": ""})
+                data["tasks"].append(card)
+                pid = card["id"]
             for it in items or []:
                 raw = {"title": it, "status": status} if isinstance(it, str) else dict(it)
                 raw.setdefault("status", status)
@@ -267,28 +275,36 @@ class PlanStore:
         if not tasks:
             return "(belum ada to-do)"
         want = [status] if status in TASK_STATES else list(TASK_STATES)
+        cards = [t for t in tasks if not t.get("parent") and t.get("status") in want]
+        if not cards:
+            return "(belum ada to-do)"
+
+        # Grouped by due date, because the web view is a calendar. Undated
+        # cards come first -- they are the ones nobody has scheduled yet.
+        def key(c: dict) -> tuple:
+            d = str(c.get("due") or "").strip()
+            return (1, d) if d else (0, "")
+
         out: list[str] = []
-        for st in want:
-            cards = [t for t in tasks if not t.get("parent") and t.get("status") == st]
-            out.append(f"== {TASK_LABELS[st]} ({len(cards)}) ==")
-            if not cards:
-                out.append("  (kosong)")
-            for c in cards:
-                kids = [k for k in tasks if k.get("parent") == c["id"]]
-                done = sum(1 for k in kids if k.get("status") == "done")
-                bits = [f"[{c['id']}] {c['title']}"]
-                if kids:
-                    bits.append(f"({done}/{len(kids)})")
-                if c.get("due"):
-                    bits.append(f"due {c['due']}")
-                if c.get("category"):
-                    bits.append(f"#{c['category']}")
-                out.append("  " + " ".join(bits))
-                if c.get("detail"):
-                    out.append(f"    {c['detail'][:120]}")
-                for k in kids:
-                    mark = "x" if k.get("status") == "done" else " "
-                    out.append(f"    [{mark}] [{k['id']}] {k['title']}")
+        cur = object()
+        for c in sorted(cards, key=key):
+            due = str(c.get("due") or "").strip()
+            if due != cur:
+                cur = due
+                out.append(f"== {due or 'Tanpa tanggal'} ==")
+            kids = [k for k in tasks if k.get("parent") == c["id"]]
+            done = sum(1 for k in kids if k.get("status") == "done")
+            bits = [f"[{c['id']}] {c['title']}", f"<{TASK_LABELS.get(c.get('status'), '?')}>"]
+            if kids:
+                bits.append(f"({done}/{len(kids)})")
+            if c.get("category"):
+                bits.append(f"#{c['category']}")
+            out.append("  " + " ".join(bits))
+            if c.get("detail"):
+                out.append(f"    {c['detail'][:120]}")
+            for k in kids:
+                mark = "x" if k.get("status") == "done" else " "
+                out.append(f"    [{mark}] [{k['id']}] {k['title']}")
         return "\n".join(out)
 
     def _resolved(self, parent: str) -> str:
