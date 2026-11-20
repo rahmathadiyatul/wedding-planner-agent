@@ -19,9 +19,9 @@ import json
 
 
 def render(token: str, title: str, entries: list, notes: str, tasks: list,
-           mail: dict | None = None) -> str:
-    payload = json.dumps({"entries": entries, "notes": notes, "tasks": tasks},
-                         ensure_ascii=False)
+           mail: dict | None = None, updated_at: str = "") -> str:
+    payload = json.dumps({"entries": entries, "notes": notes, "tasks": tasks,
+                          "updated_at": updated_at}, ensure_ascii=False)
     cfg = json.dumps(mail or {"people": [], "default_lead": "1d", "default_to": "",
                               "default_time": "09:00", "enabled": False, "why": ""},
                      ensure_ascii=False)
@@ -416,6 +416,7 @@ _PAGE = r"""<!doctype html>
 
     <div class="savebar">
       <button class="primary" onclick="save()">Simpan</button>
+      <button class="btn" onclick="reloadPlan()" title="ambil data terbaru dari server">&#8635; Muat ulang</button>
       <span id="status" class="ok"></span>
       <span class="muted">Simpan terakhir yang menang.</span>
     </div>
@@ -546,11 +547,16 @@ function renderHead(){
   }).join('')+'<th></th>';
 }
 function rowHtml(e,isSub,isLast){
-  const k=kids(e.id), ksum=kidSum(e), computed=ksum>0, amt=computed?ksum:(Number(e.amount)||0);
-  const open=computed&&SUBOPEN.has(e.id);
-  const cls=(isSub?'sub':'')+(computed&&open?' hask':'')+(isSub&&isLast?' lastsub':'');
+  /* Two different questions, and they must not share one flag:
+       hasKids  -- draw the fold caret, so sub-items are reachable at all
+       computed -- the amount is derived from them, so lock the input
+     A parent whose sub-items have no numbers yet still HAS sub-items. */
+  const k=kids(e.id), hasKids=k.length>0, ksum=kidSum(e), computed=ksum>0;
+  const amt=computed?ksum:(Number(e.amount)||0);
+  const open=hasKids&&SUBOPEN.has(e.id);
+  const cls=(isSub?'sub':'')+(open?' hask':'')+(isSub&&isLast?' lastsub':'');
   const caret=isSub?'<span class="tw">&#8627;</span>'
-    : computed ? '<button class="cr" title="buka/tutup rincian" onclick="togg(\''+e.id+'\')">'+
+    : hasKids ? '<button class="cr" title="buka/tutup rincian" onclick="togg(\''+e.id+'\')">'+
         (open?'&#9662;':'&#9656;')+'<b>'+k.length+'</b></button>'
     : '<span class="cr ph"></span>';
   const sel='<select onchange="upd(\''+e.id+'\',\'status\',this.value)">'+
@@ -989,7 +995,39 @@ async function mailTest(){
 }
 
 /* ================= save ================= */
+/* The bot writes to the same file from WhatsApp. This page holds whatever it
+   loaded, so a plain save would silently wipe anything added since. Check the
+   server's revision first and let the human decide. */
+async function serverStamp(){
+  try{
+    const r=await fetch('/api/plan?token='+encodeURIComponent(TOKEN));
+    if(!r.ok) return null;
+    return (await r.json()).updated_at || null;
+  }catch(e){ return null; }
+}
+async function reloadPlan(){
+  const st=document.getElementById('status'); st.textContent='memuat ulang...';
+  try{
+    const r=await fetch('/api/plan?token='+encodeURIComponent(TOKEN));
+    adopt(await r.json());
+    st.textContent='dimuat ulang \u2713'; setTimeout(function(){st.textContent='';},2500);
+  }catch(e){ st.textContent='gagal memuat: '+e.message; }
+}
+function adopt(d){
+  DATA=d; DATA.entries=DATA.entries||[]; DATA.tasks=DATA.tasks||[];
+  DATA.entries.forEach(e=>{ if(!e.parent) e.parent=''; });
+  DATA.tasks.forEach(t=>{ if(!t.parent) t.parent=''; });
+  document.getElementById('notes').value=DATA.notes||'';
+  render(); if(VIEW==='kan') renderBoard(); if(VIEW==='set') renderSettings();
+}
 async function save(){
+  const stamp=await serverStamp();
+  if(stamp && DATA.updated_at && stamp!==DATA.updated_at){
+    const ok=confirm('Data di server sudah berubah sejak halaman ini dibuka '+
+      '(mungkin dari bot WhatsApp).\n\nOK = timpa dengan yang di layar ini.\n'+
+      'Cancel = batal, muat ulang data terbaru.');
+    if(!ok){ await reloadPlan(); return; }
+  }
   const body={mail:MAIL,
     entries:DATA.entries.filter(e=>e.item||e.amount||kids(e.id).length),
     tasks:DATA.tasks.filter(t=>(t.title||'').trim()),
@@ -999,12 +1037,7 @@ async function save(){
     const r=await fetch('/api/plan?token='+encodeURIComponent(TOKEN),
       {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
     if(!r.ok) throw new Error(r.status);
-    DATA=await r.json();
-    DATA.entries=DATA.entries||[]; DATA.tasks=DATA.tasks||[];
-    DATA.entries.forEach(e=>{ if(!e.parent) e.parent=''; });
-    DATA.tasks.forEach(t=>{ if(!t.parent) t.parent=''; });
-    document.getElementById('notes').value=DATA.notes||'';
-    render(); if(VIEW==='kan') renderBoard();
+    adopt(await r.json());
     st.textContent='tersimpan ✓'; setTimeout(function(){st.textContent='';},2500);
   }catch(e){ st.textContent='gagal menyimpan: '+e.message; }
 }

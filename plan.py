@@ -587,4 +587,5 @@ def render_page(token: str, store: PlanStore) -> str:
         cfg = dict(data["mail"], enabled=False, why=f"mailer unavailable: {e!r}",
                    transport="none", has_secret=False)
     return page.render(token, store.title, data["entries"],
-                       data.get("notes", ""), data.get("tasks", []), cfg)
+                       data.get("notes", ""), data.get("tasks", []), cfg,
+                       data.get("updated_at", ""))
