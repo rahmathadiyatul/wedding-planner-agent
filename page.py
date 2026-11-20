@@ -85,6 +85,12 @@ _PAGE = r"""<!doctype html>
   td.amt input:disabled{background:#11151b;color:var(--muted);font-weight:700}
   td.ic{display:flex;align-items:center;gap:6px}
   td.ic .tw{flex:0 0 auto;line-height:1}
+  .cr{flex:0 0 auto;width:34px;display:inline-flex;align-items:center;justify-content:center;gap:3px;
+      background:transparent;border:1px solid var(--line);border-radius:6px;color:var(--muted);
+      font-size:10px;padding:3px 0;cursor:pointer;line-height:1}
+  .cr:hover{border-color:var(--accent);color:var(--fg)}
+  .cr b{font-size:10px;font-weight:700}
+  .cr.ph{border-color:transparent;cursor:default}
   /* sub-items hug their parent: tighter rows, no divider until the last child */
   tr.sub{background:#0f1319}
   tr.sub td{padding-top:2px;padding-bottom:2px}
@@ -195,6 +201,7 @@ _PAGE = r"""<!doctype html>
         <div class="bar">
           <button class="btn" onclick="addTop()">+ Tambah baris</button>
           <button class="btn" onclick="clearFilters()">Bersihkan filter</button>
+          <button class="btn" onclick="toggAll()">Buka/tutup rincian</button>
           <span class="muted">Nominal boleh 5000000 atau 5.000.000 &middot; pakai &ldquo;+ sub&rdquo; untuk rincian</span>
         </div>
         <div class="tablewrap">
@@ -258,6 +265,16 @@ const COLS = [
 ];
 const ST = { income:{sort:{k:'item',d:1},f:{},q:'',page:1}, expense:{sort:{k:'item',d:1},f:{},q:'',page:1} };
 let TAB='expense'; const PAGE_SIZE=10;
+
+/* Sub-items start folded; OPEN holds the parents the viewer has expanded.
+   Stored per browser, so a refresh keeps whatever you had open. */
+let OPEN = new Set();
+try{ OPEN = new Set(JSON.parse(localStorage.getItem('expanded')||'[]')); }catch(err){}
+const saveOpen = () => { try{ localStorage.setItem('expanded',JSON.stringify([...OPEN])); }catch(err){} };
+function togg(id){ OPEN.has(id)?OPEN.delete(id):OPEN.add(id); saveOpen(); render(); }
+function toggAll(){ const tops=DATA.entries.filter(e=>e.kind===TAB&&!e.parent&&kids(e.id).length);
+  const anyShut=tops.some(e=>!OPEN.has(e.id));
+  tops.forEach(e=>{ anyShut?OPEN.add(e.id):OPEN.delete(e.id); }); saveOpen(); render(); }
 
 const rp = n => { n=Math.round(Number(n)||0); return (n<0?'-':'')+'Rp '+Math.abs(n).toLocaleString('id-ID'); };
 const digits = s => { const neg=String(s).trim().startsWith('-');
@@ -323,13 +340,18 @@ function renderHead(){
 }
 function rowHtml(e,isSub,isLast){
   const k=kids(e.id), computed=k.length>0, amt=computed?amountOf(e):(Number(e.amount)||0);
-  const cls=(isSub?'sub':'')+(computed?' hask':'')+(isSub&&isLast?' lastsub':'');
+  const open=computed&&OPEN.has(e.id);
+  const cls=(isSub?'sub':'')+(computed&&open?' hask':'')+(isSub&&isLast?' lastsub':'');
+  const caret=isSub?'<span class="tw">&#8627;</span>'
+    : computed ? '<button class="cr" title="buka/tutup rincian" onclick="togg(\''+e.id+'\')">'+
+        (open?'&#9662;':'&#9656;')+'<b>'+k.length+'</b></button>'
+    : '<span class="cr ph"></span>';
   const sel='<select onchange="upd(\''+e.id+'\',\'status\',this.value)">'+
     '<option value="actual"'+(e.status==='actual'?' selected':'')+'>Sudah</option>'+
     '<option value="expected"'+(e.status==='expected'?' selected':'')+'>Rencana</option></select>';
   return '<tr class="'+cls+'" data-id="'+e.id+'">'+
     '<td data-l="Status">'+sel+'</td>'+
-    '<td class="ic" data-l="Item">'+(isSub?'<span class="tw">&#8627;</span>':'')+'<input value="'+esc(e.item)+'" '+
+    '<td class="ic" data-l="Item">'+caret+'<input value="'+esc(e.item)+'" '+
       'placeholder="'+(isSub?'rincian...':'mis. Administrasi KUA')+'" oninput="upd(\''+e.id+'\',\'item\',this.value)"></td>'+
     '<td class="amt" data-l="Nominal"><input inputmode="numeric" '+(computed?'disabled title="total dari sub-item"':'')+' '+
       'value="'+(amt?amt.toLocaleString('id-ID'):'')+'" oninput="upd(\''+e.id+'\',\'amount\',digits(this.value))" '+
@@ -345,7 +367,7 @@ function render(){
   if(st.page>pages) st.page=pages;
   const slice=rows.slice((st.page-1)*PAGE_SIZE, st.page*PAGE_SIZE);
   let h=''; slice.forEach(function(e){ const k=kids(e.id); h+=rowHtml(e,false,false);
-    k.forEach(function(c,i){h+=rowHtml(c,true,i===k.length-1);}); });
+    if(OPEN.has(e.id)) k.forEach(function(c,i){h+=rowHtml(c,true,i===k.length-1);}); });
   document.getElementById('rows').innerHTML = h ||
     '<tr><td colspan="6" class="empty">Belum ada data'+(hasFilter()?' yang cocok dengan filter':'')+'.</td></tr>';
   document.getElementById('pager').innerHTML=
@@ -375,7 +397,8 @@ function upd(id,k,v){ const e=byId(id); if(!e) return; e[k]=v; if(k==='amount'||
 function addTop(){ DATA.entries.push({id:tmp(),kind:TAB,status:'expected',item:'',amount:0,category:'',date:'',parent:''});
   ST[TAB].page=Math.max(1,Math.ceil(visibleTop().length/PAGE_SIZE)); render(); }
 function addSub(pid){ const p=byId(pid); if(!p) return;
-  DATA.entries.push({id:tmp(),kind:p.kind,status:p.status,item:'',amount:0,category:p.category||'',date:'',parent:pid}); render(); }
+  DATA.entries.push({id:tmp(),kind:p.kind,status:p.status,item:'',amount:0,category:p.category||'',date:'',parent:pid});
+  OPEN.add(pid); saveOpen(); render(); }
 function del(id){ DATA.entries=DATA.entries.filter(e=>e.id!==id&&e.parent!==id); render(); }
 
 /* ================= TO-DO (kanban) ================= */
