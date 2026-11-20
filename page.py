@@ -266,15 +266,15 @@ const COLS = [
 const ST = { income:{sort:{k:'item',d:1},f:{},q:'',page:1}, expense:{sort:{k:'item',d:1},f:{},q:'',page:1} };
 let TAB='expense'; const PAGE_SIZE=10;
 
-/* Sub-items start folded; OPEN holds the parents the viewer has expanded.
+/* Sub-items start folded; SUBOPEN holds the parents the viewer has expanded.
    Stored per browser, so a refresh keeps whatever you had open. */
-let OPEN = new Set();
-try{ OPEN = new Set(JSON.parse(localStorage.getItem('expanded')||'[]')); }catch(err){}
-const saveOpen = () => { try{ localStorage.setItem('expanded',JSON.stringify([...OPEN])); }catch(err){} };
-function togg(id){ OPEN.has(id)?OPEN.delete(id):OPEN.add(id); saveOpen(); render(); }
+let SUBOPEN = new Set();
+try{ SUBOPEN = new Set(JSON.parse(localStorage.getItem('expanded')||'[]')); }catch(err){}
+const saveOpen = () => { try{ localStorage.setItem('expanded',JSON.stringify([...SUBOPEN])); }catch(err){} };
+function togg(id){ SUBOPEN.has(id)?SUBOPEN.delete(id):SUBOPEN.add(id); saveOpen(); render(); }
 function toggAll(){ const tops=DATA.entries.filter(e=>e.kind===TAB&&!e.parent&&kids(e.id).length);
-  const anyShut=tops.some(e=>!OPEN.has(e.id));
-  tops.forEach(e=>{ anyShut?OPEN.add(e.id):OPEN.delete(e.id); }); saveOpen(); render(); }
+  const anyShut=tops.some(e=>!SUBOPEN.has(e.id));
+  tops.forEach(e=>{ anyShut?SUBOPEN.add(e.id):SUBOPEN.delete(e.id); }); saveOpen(); render(); }
 
 const rp = n => { n=Math.round(Number(n)||0); return (n<0?'-':'')+'Rp '+Math.abs(n).toLocaleString('id-ID'); };
 const digits = s => { const neg=String(s).trim().startsWith('-');
@@ -340,7 +340,7 @@ function renderHead(){
 }
 function rowHtml(e,isSub,isLast){
   const k=kids(e.id), computed=k.length>0, amt=computed?amountOf(e):(Number(e.amount)||0);
-  const open=computed&&OPEN.has(e.id);
+  const open=computed&&SUBOPEN.has(e.id);
   const cls=(isSub?'sub':'')+(computed&&open?' hask':'')+(isSub&&isLast?' lastsub':'');
   const caret=isSub?'<span class="tw">&#8627;</span>'
     : computed ? '<button class="cr" title="buka/tutup rincian" onclick="togg(\''+e.id+'\')">'+
@@ -367,7 +367,7 @@ function render(){
   if(st.page>pages) st.page=pages;
   const slice=rows.slice((st.page-1)*PAGE_SIZE, st.page*PAGE_SIZE);
   let h=''; slice.forEach(function(e){ const k=kids(e.id); h+=rowHtml(e,false,false);
-    if(OPEN.has(e.id)) k.forEach(function(c,i){h+=rowHtml(c,true,i===k.length-1);}); });
+    if(SUBOPEN.has(e.id)) k.forEach(function(c,i){h+=rowHtml(c,true,i===k.length-1);}); });
   document.getElementById('rows').innerHTML = h ||
     '<tr><td colspan="6" class="empty">Belum ada data'+(hasFilter()?' yang cocok dengan filter':'')+'.</td></tr>';
   document.getElementById('pager').innerHTML=
@@ -398,7 +398,7 @@ function addTop(){ DATA.entries.push({id:tmp(),kind:TAB,status:'expected',item:'
   ST[TAB].page=Math.max(1,Math.ceil(visibleTop().length/PAGE_SIZE)); render(); }
 function addSub(pid){ const p=byId(pid); if(!p) return;
   DATA.entries.push({id:tmp(),kind:p.kind,status:p.status,item:'',amount:0,category:p.category||'',date:'',parent:pid});
-  OPEN.add(pid); saveOpen(); render(); }
+  SUBOPEN.add(pid); saveOpen(); render(); }
 function del(id){ DATA.entries=DATA.entries.filter(e=>e.id!==id&&e.parent!==id); render(); }
 
 /* ================= TO-DO (kanban) ================= */
