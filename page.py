@@ -102,7 +102,7 @@ _PAGE = r"""<!doctype html>
   .app{display:flex;min-height:100vh}
 
   /* ------------------------------------------------------------ sidebar */
-  .side{width:228px;flex:0 0 228px;background:var(--surface);border-right:1px solid var(--line);
+  .side{width:244px;flex:0 0 244px;background:var(--surface);border-right:1px solid var(--line);
         display:flex;flex-direction:column;gap:2px;padding:20px 14px;position:sticky;top:0;
         height:100vh;transition:width .2s ease,flex-basis .2s ease}
   .brand{display:flex;align-items:center;gap:11px;padding:2px 8px 22px;white-space:nowrap;overflow:hidden}
@@ -172,6 +172,7 @@ _PAGE = r"""<!doctype html>
   .big + .big{background:linear-gradient(135deg,var(--accent-soft),var(--surface) 70%)}
   .meter{height:6px;border-radius:999px;background:var(--surface-2);margin-top:14px;overflow:hidden}
   .meter i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--gold))}
+  .meter.over i{background:var(--out)}
 
   /* segmented controls: finance tabs and the week/month switch */
   .tabs,.seg{display:inline-flex;gap:2px;padding:4px;border-radius:12px;background:var(--sunken);
@@ -373,6 +374,16 @@ _PAGE = r"""<!doctype html>
            background:linear-gradient(180deg,transparent,var(--bg) 38%)}
   .savebar .muted{font-size:12px}
 
+  /* settings checklist + validation */
+  .banner.steps{display:block}
+  .banner .sth{font-weight:700}
+  .banner ol{margin:8px 0 0;padding-left:20px;color:var(--fg);font-weight:500}
+  .banner li{margin:3px 0}
+  .banner li.done{color:var(--in);list-style:none;margin-left:-16px}
+  input.bad{border-color:var(--out)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--out) 18%,transparent)}
+  .perr{color:var(--out);font-size:12px;font-weight:600;min-height:0;margin:2px 0 0 2px}
+  .perr:empty{display:none}
+
   /* to-do: day sheet + search results */
   .drow{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:var(--surface);
         border:1px solid var(--line);border-radius:12px;padding:11px 13px;margin-top:8px;cursor:pointer;
@@ -388,7 +399,7 @@ _PAGE = r"""<!doctype html>
   .kres-h{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:600;color:var(--muted)}
   .pill .tm{font-weight:700;margin-right:2px}
   #nodate.over{outline:2px dashed var(--accent);outline-offset:6px;border-radius:12px}
-  .drw button.primary{width:100%}
+  .drw button.primary{width:100%;flex:none}
 
   /* ledger helpers */
   .cap{font-size:11px;color:var(--muted);text-align:right;padding:0 10px;text-decoration:line-through}
@@ -494,7 +505,6 @@ _PAGE = r"""<!doctype html>
     .savebar{bottom:calc(64px + env(safe-area-inset-bottom));padding:10px 16px}
     .toast{bottom:calc(76px + env(safe-area-inset-bottom))}
     .savebar .muted{display:none}
-    button.primary{flex:1}
   }
   @media (prefers-reduced-motion: reduce){
     *{animation:none!important;transition:none!important}
@@ -610,7 +620,7 @@ _PAGE = r"""<!doctype html>
         <div class="grid2">
           <div><label>Alamat pengirim</label>
             <input id="m-from" placeholder="wedding@domainmu.com"
-                   oninput="mset('from_email',this.value)">
+                   oninput="mset('from_email',this.value,this)">
             <div class="muted sm">harus sudah <b>verified sender</b> di Brevo</div></div>
           <div><label>Nama pengirim</label>
             <input id="m-fromname" placeholder="Wedding Planner"
@@ -635,6 +645,7 @@ _PAGE = r"""<!doctype html>
             <select id="m-lead" onchange="mset('default_lead',this.value)"></select>
             <label style="margin-top:10px">Jam default</label>
             <input id="m-time" type="time" onchange="mset('default_time',this.value)">
+            <div class="muted sm" id="m-time-hint"></div>
             <div class="muted sm">dipakai untuk to-do yang punya tanggal tapi tanpa jam</div></div>
         </div>
 
@@ -688,7 +699,14 @@ const tmp = () => { const a=new Uint8Array(4); crypto.getRandomValues(a);
 
 /* ================= view switching ================= */
 let VIEW='fin';
+/* The view lives in the URL hash: the phone's Back button walks back through
+   screens, a link can open #todo directly, and a refresh lands where you were.
+   #todo/<id> also opens that to-do (reminder emails link to it). */
+const HASH={fin:'keuangan',kan:'todo',set:'settings'};
+const UNHASH={keuangan:'fin',todo:'kan',settings:'set'};
 function setView(v){
+  if(!HASH[v]) v='fin';
+  if(location.hash.slice(1).split('/')[0]!==HASH[v]) location.hash=HASH[v];
   VIEW=v;
   ['fin','kan','set'].forEach(function(k){
     document.getElementById('v-'+k).className='view'+(v===k?' on':'');
@@ -697,7 +715,14 @@ function setView(v){
   try{ localStorage.setItem('view',v); }catch(e){}
   if(v==='kan') renderBoard();
   if(v==='set') renderSettings();
+  if(v!=='kan' && document.getElementById('drw').classList.contains('on')) closeDrw();
 }
+function route(){
+  const parts=location.hash.slice(1).split('/'), v=UNHASH[parts[0]];
+  if(v && v!==VIEW) setView(v);
+  if(v==='kan' && parts[1] && tById(parts[1])) jumpTo(parts[1]);
+}
+addEventListener('hashchange', route);
 function curTheme(){
   const forced=document.documentElement.getAttribute('data-theme');
   if(forced) return forced;
@@ -807,9 +832,14 @@ function updateSummary(){
     ['Pengeluaran rencana', rp(ee), '', 'out', false],
   ];
   /* how much of everything coming in is already spoken for */
-  const used=(ia+ie)>0?Math.min(100,Math.round((ea+ee)/(ia+ie)*100)):0;
-  const meter='<div class="meter" title="'+used+'% pemasukan sudah dialokasikan"><i style="width:'+used+'%"></i></div>'+
-              '<div class="s">'+used+'% dari total pemasukan sudah dialokasikan</div>';
+  const inc=ia+ie, out=ea+ee, used=inc>0?Math.round(out/inc*100):0, over=inc>0&&used>100;
+  const meter=inc>0
+    ? '<div class="meter'+(over?' over':'')+'" title="'+used+'% pemasukan sudah dialokasikan">'+
+        '<i style="width:'+Math.min(100,used)+'%"></i></div>'+
+      '<div class="s'+(over?' warn':'')+'">'+(over
+        ? 'pengeluaran melebihi pemasukan ('+used+'%)'
+        : used+'% dari total pemasukan sudah dialokasikan')+'</div>'
+    : (out>0?'<div class="s warn">belum ada pemasukan yang tercatat</div>':'');
   document.getElementById('cards').innerHTML = cards.map(function(c,i){
     return '<div class="card'+(c[4]?' big':'')+'"><div class="l">'+c[0]+'</div>'+
            '<div class="v '+c[3]+'">'+c[1]+'</div>'+
@@ -1158,8 +1188,12 @@ function renderBoard(){
   } else { res.innerHTML=''; res.style.display='none'; }
 
   const nd=topTasks().filter(t=>!t.due);
-  document.getElementById('nodate').innerHTML = nd.map(pillHtml).join('') ||
-    '<span class="muted">semua to-do sudah punya tanggal.</span>';
+  const none=!DATA.tasks.some(t=>!t.parent);
+  document.getElementById('nodate').innerHTML = nd.map(function(t){ return pillHtml(t,''); }).join('') ||
+    (none?'<span class="empty" style="padding:6px 0;text-align:left">Belum ada to-do. '+
+      (NARROW()?'Tap sebuah tanggal':'Arahkan ke tanggal lalu klik +')+', atau minta di WhatsApp: '+
+      '<em>@bang tambahin to-do cari venue tanggal 15 Desember</em></span>'
+         :'<span class="muted">semua to-do sudah punya tanggal.</span>');
   document.getElementById('nd-ct').textContent=nd.length;
   updateKanCount();
 }
@@ -1324,10 +1358,11 @@ function remindHtml(c){
   const opts=leadOpts().map(function(l){
     return '<option value="'+l[0]+'"'+((c.remind||'')===l[0]?' selected':'')+'>'+l[1]+'</option>';
   }).join('');
-  const who=(MAIL.people||[]).filter(p=>p.name).map(function(p){
-    const n=p.name, on=to.indexOf(n.toLowerCase())!==-1;
+  const who=(MAIL.people||[]).map(function(p,i){
+    if(!(p.name||'').trim()) return '';
+    const n=p.name.trim(), on=to.indexOf(n.toLowerCase())!==-1;
     return '<label class="who"><input type="checkbox" '+(on?'checked':'')+
-      ' onchange="setWho(\''+c.id+'\',\''+esc(n)+'\',this.checked)"> '+esc(n)+'</label>';
+      ' onchange="setWhoIdx(\''+c.id+'\','+i+',this.checked)"> '+esc(n)+'</label>';
   }).join('') || '<span class="muted" style="font-size:12px">daftar penerima masih kosong &mdash; '+
                  'isi di <a href="#" onclick="setView(\'set\');return false">Settings</a></span>';
   if(isRange(c)){
@@ -1351,10 +1386,11 @@ function remindHtml(c){
     (note?'<div class="muted" style="font-size:12px">'+note+'</div>':'');
 }
 function setRemind(id,v){ tupd(id,'remind',v); renderDrw(); }
+function setWhoIdx(id,i,on){ const p=(MAIL.people||[])[i]; if(p) setWho(id,p.name.trim(),on); }
 function setWho(id,name,on){
   const t=tById(id); if(!t) return;
   const cur=(t.remind_to||'').split(',').map(s=>s.trim()).filter(Boolean);
-  const i=cur.map(s=>s.toLowerCase()).indexOf(name);
+  const i=cur.map(s=>s.toLowerCase()).indexOf(name.toLowerCase());
   if(on && i===-1) cur.push(name);
   if(!on && i!==-1) cur.splice(i,1);
   t.remind_to=cur.join(','); renderDrw();
@@ -1422,12 +1458,26 @@ function ndDrop(ev){ ev.preventDefault(); ndLeave();
 /* Typing must never rebuild the field being typed into, or the input loses
    focus after every keystroke. So each piece of the screen renders on its
    own, and an edit only redraws the parts that actually depend on it. */
-function mset(k,v){ MAIL[k]=v; if(k==='enabled') renderBanner(); }
+function mset(k,v,el){ MAIL[k]=v; renderBanner();
+  if(el && k==='from_email') el.classList.toggle('bad', !!v && !validEmail(v)); }
 function mailPeople(){ return MAIL.people || (MAIL.people=[]); }
-function pset(i,k,v){
+function pset(i,k,v,el){
   const p=mailPeople()[i]; if(!p) return;
   p[k]=v;
+  if(el) markPerson(i, el.closest('.prow'));
   if(k==='name') renderDefaultTo();   /* the checkbox labels follow the names */
+  renderBanner();
+}
+/* flag a bad address or a duplicate name in place, without rebuilding the row */
+function markPerson(i,row){
+  if(!row) return;
+  const p=mailPeople()[i], ins=row.querySelectorAll('input'), msg=row.nextElementSibling;
+  const dup=(p.name||'').trim() && mailPeople().some((q,j)=>j!==i &&
+            (q.name||'').trim().toLowerCase()===(p.name||'').trim().toLowerCase());
+  const bad=(p.email||'').trim() && !validEmail(p.email);
+  ins[0].classList.toggle('bad', !!dup); ins[1].classList.toggle('bad', !!bad);
+  if(msg && msg.classList.contains('perr'))
+    msg.textContent=dup?'nama ini sudah dipakai':(bad?'alamat email belum valid':'');
 }
 function addPerson(){
   mailPeople().push({name:'',email:''});
@@ -1435,8 +1485,10 @@ function addPerson(){
   const rows=document.querySelectorAll('#m-people .prow');
   if(rows.length){ const inp=rows[rows.length-1].querySelector('input'); if(inp) inp.focus(); }
 }
-function pdel(i){ mailPeople().splice(i,1); renderPeople(); renderDefaultTo(); }
+function pdel(i){ mailPeople().splice(i,1); renderPeople(); renderDefaultTo(); renderBanner(); }
 function toList(){ return (MAIL.default_to||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean); }
+/* handlers pass an index, never a name: a name like Ma'ruf would break the quoting */
+function setDefaultToIdx(i,on){ const p=mailPeople()[i]; if(p) setDefaultTo(p.name.trim(),on); renderBanner(); }
 function setDefaultTo(name,on){
   const cur=(MAIL.default_to||'').split(',').map(s=>s.trim()).filter(Boolean);
   const i=cur.map(s=>s.toLowerCase()).indexOf(name.toLowerCase());
@@ -1444,42 +1496,66 @@ function setDefaultTo(name,on){
   if(!on&&i!==-1) cur.splice(i,1);
   MAIL.default_to=cur.join(','); renderDefaultTo();
 }
+const validEmail = s => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s||'').trim());
+/* Every step that has to be true for reminders to go out, checked against
+   what is on screen right now -- not a server verdict from page load. */
+function setupSteps(){
+  const people=mailPeople().filter(p=>(p.name||'').trim() && validEmail(p.email));
+  const names=people.map(p=>p.name.trim().toLowerCase());
+  const def=toList().filter(n=>names.indexOf(n)!==-1);
+  return [
+    ['Kunci Brevo di server', !!MAIL.has_secret, 'isi BREVO_API_KEY di .env server (bukan dari halaman ini)'],
+    ['Alamat pengirim', validEmail(MAIL.from_email||MAIL.eff_from), 'isi di bagian Pengirim'],
+    ['Minimal satu penerima', people.length>0, 'tambah orang di Daftar penerima'],
+    ['Penerima default dipilih', def.length>0, 'centang di bagian Default'],
+    ['Saklar aktif', MAIL.enabled!==false, 'nyalakan di bagian Saklar'],
+  ];
+}
 function renderBanner(){
-  const b=document.getElementById('mailstatus');
-  const ready=MAIL.ready&&MAIL.enabled!==false;
-  b.className='banner '+(ready?'ok':'warn');
-  b.innerHTML=ready
-    ? '&#10003; Pengingat aktif &middot; lewat '+esc(MAIL.transport)+' &middot; zona '+esc(MAIL.tz)
-    : '&#9888; Belum jalan: '+esc(MAIL.why||'belum lengkap')+
-      ' <span class="muted sm">(status dicek ulang setelah Simpan)</span>';
+  const b=document.getElementById('mailstatus'), steps=setupSteps();
+  const missing=steps.filter(s=>!s[1]);
+  b.className='banner '+(missing.length?'warn':'ok')+' steps';
+  b.innerHTML='<div class="sth">'+(missing.length
+      ? '&#9888; Pengingat belum jalan &mdash; '+missing.length+' langkah lagi'
+      : '&#10003; Pengingat aktif &middot; lewat '+esc(MAIL.transport||'Brevo')+' &middot; zona '+esc(MAIL.tz||'Asia/Jakarta'))+
+    '</div>'+(missing.length?'<ol>'+steps.map(function(s){
+      return '<li class="'+(s[1]?'done':'')+'">'+(s[1]?'&#10003; ':'')+esc(s[0])+
+        (s[1]?'':' <span class="muted sm">&mdash; '+esc(s[2])+'</span>')+'</li>'; }).join('')+'</ol>':'');
 }
 function renderPeople(){
   document.getElementById('m-people').innerHTML=mailPeople().map(function(p,i){
     return '<div class="prow">'+
-      '<input placeholder="nama (mis. dian)" value="'+esc(p.name)+'" oninput="pset('+i+',\'name\',this.value)">'+
-      '<input placeholder="email" type="email" value="'+esc(p.email)+'" oninput="pset('+i+',\'email\',this.value)">'+
-      '<button class="btn del" onclick="pdel('+i+')">&#10005;</button></div>'; }).join('')
+      '<input placeholder="nama (mis. Dian)" value="'+esc(p.name)+'" oninput="pset('+i+',\'name\',this.value,this)">'+
+      '<input placeholder="email" type="email" value="'+esc(p.email)+'" oninput="pset('+i+',\'email\',this.value,this)">'+
+      '<button class="btn del" onclick="pdel('+i+')" aria-label="hapus">&#10005;</button></div>'+
+      '<div class="perr"></div>'; }).join('')
     || '<div class="muted sm">belum ada. tambahkan minimal satu orang.</div>';
+  document.querySelectorAll('#m-people .prow').forEach(function(r,i){ markPerson(i,r); });
 }
 function renderDefaultTo(){
   const sel=toList();
-  document.getElementById('m-default-to').innerHTML=mailPeople().filter(p=>p.name.trim()).map(function(p){
+  document.getElementById('m-default-to').innerHTML=mailPeople().map(function(p,i){
+    if(!(p.name||'').trim()) return '';
     const on=sel.indexOf(p.name.trim().toLowerCase())!==-1;
     return '<label class="who"><input type="checkbox" '+(on?'checked':'')+
-      ' onchange="setDefaultTo(\''+esc(p.name.trim())+'\',this.checked)"> '+esc(p.name)+'</label>';
+      ' onchange="setDefaultToIdx('+i+',this.checked)"> '+esc(p.name)+'</label>';
   }).join('') || '<span class="muted sm">isi daftar penerima dulu</span>';
 }
 function renderSettings(){
   renderBanner();
   document.getElementById('m-from').value=MAIL.from_email||'';
   document.getElementById('m-fromname').value=MAIL.from_name||'';
-  document.getElementById('m-time').value=MAIL.default_time||MAIL.eff_time||'';
+  document.getElementById('m-time').value=MAIL.default_time||'';
+  document.getElementById('m-time-hint').textContent=MAIL.default_time?'':
+    'kosong = ikut default server ('+(MAIL.eff_time||'09:00')+')';
   document.getElementById('m-on').checked=MAIL.enabled!==false;
 
   const leads=(MAIL.leads||[]), labels=(MAIL.lead_labels||[]);
-  document.getElementById('m-lead').innerHTML=leads.map(function(l,i){
-    return '<option value="'+l+'"'+((MAIL.default_lead||MAIL.eff_lead)===l?' selected':'')+'>'+
-           esc(labels[i]||l)+'</option>'; }).join('');
+  document.getElementById('m-lead').innerHTML=
+    '<option value=""'+(MAIL.default_lead?'':' selected')+'>ikut default server ('+
+      esc(labels[leads.indexOf(MAIL.eff_lead)]||MAIL.eff_lead||'1 hari')+')</option>'+
+    leads.map(function(l,i){
+      return '<option value="'+l+'"'+(MAIL.default_lead===l?' selected':'')+'>'+esc(labels[i]||l)+'</option>'; }).join('');
 
   renderPeople(); renderDefaultTo();
 }
@@ -1690,5 +1766,11 @@ function toast(msg, undo){
 document.getElementById('notes').value = DATA.notes || '';
 takeBase(DATA); MAILBASE=JSON.stringify(mailPayload());
 render(); paintSave();
+(function(){                         /* open where the link -- or last visit -- points */
+  let saved=''; try{ saved=localStorage.getItem('view')||''; }catch(e){}
+  if(UNHASH[location.hash.slice(1).split('/')[0]]) route();
+  else if(HASH[saved] && saved!=='fin') setView(saved);
+  else history.replaceState(null,'',location.pathname+location.search+'#keuangan');
+})();
 </script>
 </body></html>"""

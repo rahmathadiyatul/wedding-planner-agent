@@ -1503,7 +1503,8 @@ def reminder_tick() -> int:
         if now > (when if n > 1 else start) + grace:
             get_plan().task_update(t["id"], notified=key)
             continue
-        subject, html, text = mailer.reminder_body(t, kids, start, lead, doc_url(), i, n)
+        link = f"{doc_url()}#todo/{t['id']}" if doc_url() else ""
+        subject, html, text = mailer.reminder_body(t, kids, start, lead, link, i, n)
         ok, detail = mailer.send(who, subject, html, text, c)
         if ok:
             get_plan().task_update(t["id"], notified=key)
