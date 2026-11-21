@@ -559,6 +559,10 @@ _PAGE = r"""<!doctype html>
       <svg class="nic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v15H4z"/>
         <path d="m8 12 2.6 2.6L16 9.4"/></svg>
       <span class="lb">To-do</span><span class="ct" id="kan-ct">0</span></button>
+    <button class="nav" id="nav-jr" onclick="setView('jr')" title="Catatan">
+      <svg class="nic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h10l3 3v15H6z"/>
+        <path d="M9 9h7M9 13h7M9 17h4"/></svg>
+      <span class="lb">Catatan</span><span class="ct" id="jr-ct">0</span></button>
     <button class="nav" id="nav-set" onclick="setView('set')" title="Settings">
       <svg class="nic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/>
         <path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></svg>
@@ -602,10 +606,6 @@ _PAGE = r"""<!doctype html>
           </table>
           <div class="pg" id="pager"></div>
         </div>
-        <h2>Catatan <span class="chip" id="jr-ct"></span></h2>
-        <p class="muted" style="margin:-4px 0 14px">Catatan dari to-do yang sudah <b>Selesai</b>, urut waktu
-          (yang terbaru di bawah). Tulis catatannya di to-do, lalu tandai Selesai.</p>
-        <div class="journal" id="journal"></div>
       </section>
 
       <!-- ============== TO-DO ============== -->
@@ -636,6 +636,17 @@ _PAGE = r"""<!doctype html>
           <div class="list" id="nodate" ondragover="ndOver(event)" ondragleave="ndLeave()" ondrop="ndDrop(event)"></div>
           <button class="btn" style="margin-top:8px" onclick="addTask('')">+ to-do tanpa tanggal</button>
         </div>
+      </section>
+
+      <!-- ============== CATATAN ============== -->
+      <section id="v-jr" class="view">
+        <header class="ph">
+          <p class="eyebrow">__TITLE__</p>
+          <h1>Catatan</h1>
+          <p class="lede">Hasil dari setiap to-do yang sudah <b>Selesai</b>, urut waktu &mdash; yang terbaru di bawah.
+            Tulis catatannya di to-do, lalu tandai Selesai.</p>
+        </header>
+        <div class="journal" id="journal"></div>
       </section>
 
       <!-- ============== SETTINGS ============== -->
@@ -734,19 +745,20 @@ let VIEW='fin';
 /* The view lives in the URL hash: the phone's Back button walks back through
    screens, a link can open #todo directly, and a refresh lands where you were.
    #todo/<id> also opens that to-do (reminder emails link to it). */
-const HASH={fin:'keuangan',kan:'todo',set:'settings'};
-const UNHASH={keuangan:'fin',todo:'kan',settings:'set'};
+const HASH={fin:'keuangan',kan:'todo',jr:'catatan',set:'settings'};
+const UNHASH={keuangan:'fin',todo:'kan',catatan:'jr',settings:'set'};
 function setView(v){
   if(!HASH[v]) v='fin';
   if(location.hash.slice(1).split('/')[0]!==HASH[v]) location.hash=HASH[v];
   VIEW=v;
-  ['fin','kan','set'].forEach(function(k){
+  ['fin','kan','jr','set'].forEach(function(k){
     document.getElementById('v-'+k).className='view'+(v===k?' on':'');
     document.getElementById('nav-'+k).className='nav'+(v===k?' on':'');
   });
   try{ localStorage.setItem('view',v); }catch(e){}
   if(v==='kan') renderBoard();
   if(v==='set') renderSettings();
+  if(v==='jr') renderJournal();
   if(v!=='kan' && document.getElementById('drw').classList.contains('on')) closeDrw();
 }
 function route(){
@@ -1020,10 +1032,6 @@ function renderJournal(){
   document.getElementById('jr-ct').textContent=list.length+(legacy?1:0);
   if(document.activeElement && document.activeElement.id==='notes') return;   /* don't yank the cursor */
   let h='';
-  if(legacy) h+='<article class="jent legacy"><div class="jhd"><span class="jdate">Catatan lama</span>'+
-      '<span class="muted sm" style="margin:0">dari sebelum jurnal &mdash; rapikan lalu hapus</span>'+
-      '<button class="btn del" onclick="clearLegacy()">Hapus</button></div>'+
-      '<textarea id="notes" spellcheck="false" oninput="DATA.notes=this.value">'+esc(DATA.notes)+'</textarea></article>';
   h+=list.map(function(t){
     const n=sessionNo(t);
     return '<article class="jent"><div class="jhd"><span class="jdate">'+esc(fmtStamp(t))+'</span>'+
@@ -1032,6 +1040,10 @@ function renderJournal(){
       (t.category?'<span class="chip">#'+esc(t.category)+'</span>':'')+
       '<a class="jopen" href="#todo/'+t.id+'">buka &rarr;</a></div>'+
       '<div class="jbody">'+esc(t.detail)+'</div></article>'; }).join('');
+  if(legacy) h+='<article class="jent legacy"><div class="jhd"><span class="jdate">Catatan lama</span>'+
+      '<span class="muted sm" style="margin:0">teks bebas dari sebelum ada jurnal &mdash; rapikan lalu hapus</span>'+
+      '<button class="btn del" onclick="clearLegacy()">Hapus</button></div>'+
+      '<textarea id="notes" spellcheck="false" oninput="DATA.notes=this.value">'+esc(DATA.notes)+'</textarea></article>';
   el.innerHTML=h||'<div class="empty" style="padding:22px">Belum ada catatan. Buka sebuah to-do, isi Catatan-nya, '+
     'lalu tandai <b>Selesai</b> &mdash; catatannya muncul di sini.</div>';
 }
@@ -1455,7 +1467,7 @@ function renderDrw(){
     '<label>Kategori</label>'+
     '<input value="'+esc(c.category)+'" placeholder="mis. akad" oninput="tupd(\'' + c.id + '\',\'category\',this.value)">'+
     '<label>Catatan</label>'+
-    '<textarea style="min-height:90px" placeholder="hasilnya apa? catatan ini masuk ke Keuangan \u203a Catatan saat to-do Selesai" '+
+    '<textarea style="min-height:90px" placeholder="hasilnya apa? catatan ini masuk ke menu Catatan saat to-do Selesai" '+
       'oninput="tupd(\'' + c.id + '\',\'detail\',this.value)">'+esc(c.detail)+'</textarea>'+
     historyHtml(c)+
     '<label>Checklist '+(ks.length?'<span class="chip pr">'+done+'/'+ks.length+'</span>':'')+'</label>'+
@@ -1533,7 +1545,7 @@ function setStatus(id,v){ const t=tById(id); if(!t) return;
   if(v==='done' && t.status!=='done') t.done_at=nowStamp();
   if(v!=='done') t.done_at='';
   t.status=v; renderDrw(); renderBoard(); render();
-  if(v==='done' && (t.detail||'').trim()) toast('Selesai \u00b7 catatannya masuk ke Keuangan \u203a Catatan');
+  if(v==='done' && (t.detail||'').trim()) toast('Selesai \u00b7 catatannya masuk ke menu Catatan');
 }
 /* Moving the start moves a range's end with it, so the run keeps its length.
    Clearing the start clears the end, so an old range can't come back later. */
