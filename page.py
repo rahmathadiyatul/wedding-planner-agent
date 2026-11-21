@@ -374,6 +374,36 @@ _PAGE = r"""<!doctype html>
            background:linear-gradient(180deg,transparent,var(--bg) 38%)}
   .savebar .muted{font-size:12px}
 
+  /* Catatan journal */
+  .journal{display:flex;flex-direction:column;gap:10px}
+  .jent{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);
+        border-radius:var(--r);padding:14px 16px;box-shadow:var(--shadow-sm)}
+  .jent.legacy{border-left-color:var(--gold)}
+  .jent.legacy textarea{margin-top:10px;min-height:120px;background:var(--surface-2);border-color:transparent}
+  .jhd{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .jdate{font-size:12px;font-weight:700;color:var(--gold);letter-spacing:.02em}
+  .jt{font-family:var(--serif);font-weight:600;font-size:16px;flex:1;min-width:140px}
+  .jhd .btn.del{margin-left:auto}
+  .jopen{font-size:12px;font-weight:600;color:var(--accent);text-decoration:none;margin-left:auto}
+  .jopen:hover{text-decoration:underline}
+  .jbody{margin-top:8px;white-space:pre-wrap;line-height:1.6;font-size:14px}
+  /* drawer: autosave status, history, extend */
+  .dsync{font:600 11px var(--sans);color:var(--in);letter-spacing:0}
+  .dsync.busy{color:var(--warn)} .dsync.err{color:var(--out)}
+  .hist{display:flex;flex-direction:column;gap:6px}
+  .hrow{display:grid;grid-template-columns:auto auto 9px 1fr;align-items:center;gap:10px;text-align:left;
+        background:var(--surface-2);border:1px solid transparent;border-radius:10px;padding:9px 12px;
+        cursor:pointer;font:500 13px var(--sans);color:var(--fg)}
+  .hrow:hover{border-color:var(--accent)}
+  .hrow.me{background:var(--accent-soft);cursor:default}
+  .hrow .hn{font-weight:700} .hrow .hd{color:var(--muted);font-size:12px}
+  .hrow .sdot{width:9px;height:9px;border-radius:50%}
+  .hrow .hx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .extbox{margin-top:10px;padding:14px;border-radius:12px;background:var(--surface-2);
+          border:1px dashed var(--line-2)}
+  .btn.primary-sm{background:var(--accent);color:var(--accent-fg);border-color:var(--accent)}
+  .btn.primary-sm:hover{color:var(--accent-fg);filter:brightness(1.06)}
+
   /* settings checklist + validation */
   .banner.steps{display:block}
   .banner .sth{font-weight:700}
@@ -572,8 +602,10 @@ _PAGE = r"""<!doctype html>
           </table>
           <div class="pg" id="pager"></div>
         </div>
-        <h2>Catatan</h2>
-        <textarea id="notes" spellcheck="false" oninput="DATA.notes=this.value"></textarea>
+        <h2>Catatan <span class="chip" id="jr-ct"></span></h2>
+        <p class="muted" style="margin:-4px 0 14px">Catatan dari to-do yang sudah <b>Selesai</b>, urut waktu
+          (yang terbaru di bawah). Tulis catatannya di to-do, lalu tandai Selesai.</p>
+        <div class="journal" id="journal"></div>
       </section>
 
       <!-- ============== TO-DO ============== -->
@@ -966,7 +998,46 @@ function render(){
     '<button class="btn" '+(st.page>=pages?'disabled':'')+' onclick="go(1)">Berikutnya &rsaquo;</button>';
   document.getElementById('tab-income').className='tab'+(TAB==='income'?' on':'');
   document.getElementById('tab-expense').className='tab'+(TAB==='expense'?' on':'');
-  syncMobile(); paintChip(); updateSummary(); updateKanCount();
+  syncMobile(); paintChip(); updateSummary(); updateKanCount(); renderJournal();
+}
+/* ---- Catatan: a journal of finished to-dos ----
+   Only to-dos marked Selesai with a note appear, ordered by when they were
+   finished. The old free-text notes survive as one editable entry at the top
+   until they are tidied away. */
+const nowStamp = () => new Date().toISOString();
+const stampMs = t => { const v=t.done_at||(t.due?t.due+'T00:00':''); const n=Date.parse(v); return isNaN(n)?0:n; };
+function fmtStamp(t){
+  if(!t.done_at) return t.due?fmtDay(t.due):'';
+  const d=new Date(t.done_at);
+  if(/T00:00:00$/.test(t.done_at)) return fmtDay(t.done_at.slice(0,10));   /* date-only fallback */
+  return fmtDay(iso(d))+' \u00b7 '+pad2(d.getHours())+':'+pad2(d.getMinutes());
+}
+function renderJournal(){
+  const el=document.getElementById('journal'); if(!el) return;
+  const list=DATA.tasks.filter(t=>!t.parent && t.status==='done' && (t.detail||'').trim())
+                       .sort((a,b)=>stampMs(a)-stampMs(b));
+  const legacy=(DATA.notes||'').trim();
+  document.getElementById('jr-ct').textContent=list.length+(legacy?1:0);
+  if(document.activeElement && document.activeElement.id==='notes') return;   /* don't yank the cursor */
+  let h='';
+  if(legacy) h+='<article class="jent legacy"><div class="jhd"><span class="jdate">Catatan lama</span>'+
+      '<span class="muted sm" style="margin:0">dari sebelum jurnal &mdash; rapikan lalu hapus</span>'+
+      '<button class="btn del" onclick="clearLegacy()">Hapus</button></div>'+
+      '<textarea id="notes" spellcheck="false" oninput="DATA.notes=this.value">'+esc(DATA.notes)+'</textarea></article>';
+  h+=list.map(function(t){
+    const n=sessionNo(t);
+    return '<article class="jent"><div class="jhd"><span class="jdate">'+esc(fmtStamp(t))+'</span>'+
+      '<span class="jt">'+esc(t.title||'(tanpa judul)')+'</span>'+
+      (n>1?'<span class="chip">sesi '+n+'</span>':'')+
+      (t.category?'<span class="chip">#'+esc(t.category)+'</span>':'')+
+      '<a class="jopen" href="#todo/'+t.id+'">buka &rarr;</a></div>'+
+      '<div class="jbody">'+esc(t.detail)+'</div></article>'; }).join('');
+  el.innerHTML=h||'<div class="empty" style="padding:22px">Belum ada catatan. Buka sebuah to-do, isi Catatan-nya, '+
+    'lalu tandai <b>Selesai</b> &mdash; catatannya muncul di sini.</div>';
+}
+function clearLegacy(){
+  const old=DATA.notes; DATA.notes=''; renderJournal();
+  toast('Catatan lama dihapus', function(){ DATA.notes=old; renderJournal(); });
 }
 function syncMobile(){
   const st=ST[TAB], sel=document.getElementById('msort');
@@ -1130,6 +1201,7 @@ function pillHtml(t,ds){
     ' onclick="pillTap(event,\'' + t.id + '\')">'+
     '<span class="pt">'+(t.time?'<b class="tm">'+esc(t.time)+'</b> ':'')+esc(t.title||'(tanpa judul)')+'</span>'+
     (run&&day?'<span class="pc">'+day+'/'+rangeDays(t)+'</span>':'')+
+    (t.cont_of?'<span class="pc" title="lanjutan">&#8618;'+sessionNo(t)+'</span>':'')+
     (armed(t)?'<span class="pc" title="ada pengingat email">&#9993;</span>':'')+
     (ks.length?'<span class="pc">'+done+'/'+ks.length+'</span>':'')+'</button>';
 }
@@ -1245,10 +1317,65 @@ function remindSummary(t){
 }
 addEventListener('scroll',function(){ document.getElementById('tip').classList.remove('on'); },true);
 
+/* ---- sessions: a to-do continued on another day ----
+   Each follow-up is its own to-do pointing back via cont_of, so it has its
+   own date, reminder, status and note; together they form a chain. */
+function sessionsOf(t){
+  const seen=new Set(); let root=t;
+  while(root.cont_of && !seen.has(root.id)){ seen.add(root.id); const p=tById(root.cont_of); if(!p) break; root=p; }
+  const chain=[root]; let cur=root;
+  for(let i=0;i<50;i++){ const nx=DATA.tasks.find(x=>x.cont_of===cur.id && !x.parent); if(!nx) break; chain.push(nx); cur=nx; }
+  return chain;
+}
+const sessionNo = t => (t.cont_of||DATA.tasks.some(x=>x.cont_of===t.id)) ? sessionsOf(t).indexOf(t)+1 : 1;
+let EXTOPEN=false;
+function extendBox(c){
+  const from=c.due_end||c.due||iso(new Date());
+  const def=addDays(from>iso(new Date())?from:iso(new Date()),1);
+  return '<div class="extbox">'+
+    '<div class="sm" style="margin:0 0 8px">Sesi ini ditutup (Selesai) dan catatannya tetap tersimpan. '+
+      'Checklist yang belum dicentang ikut pindah.</div>'+
+    '<div class="trow" style="margin:0">'+
+      '<input type="date" id="ext-d" value="'+def+'" style="flex:2;min-width:130px" aria-label="tanggal lanjutan">'+
+      '<input type="time" id="ext-t" value="'+esc(c.time||'')+'" style="flex:1;min-width:96px" aria-label="jam">'+
+    '</div>'+
+    '<div class="trow"><button class="btn primary-sm" onclick="extendTask(\''+c.id+'\')">Buat lanjutan</button>'+
+      '<button class="btn" onclick="EXTOPEN=false;renderDrw()">Batal</button></div></div>';
+}
+function extendTask(id){
+  const t=tById(id); if(!t) return;
+  const ds=(document.getElementById('ext-d')||{}).value, tm=(document.getElementById('ext-t')||{}).value||'';
+  if(!ds){ toast('Pilih tanggal lanjutannya dulu'); return; }
+  const nid=tmp();
+  const nt={id:nid,title:t.title,detail:'',status:'todo',category:t.category||'',due:ds,due_end:'',
+            time:tm||t.time||'',remind:t.remind||'',remind_to:t.remind_to||'',parent:'',cont_of:t.id,done_at:''};
+  const moved=tKids(t.id).filter(k=>k.status!=='done');
+  const prev={status:t.status,done_at:t.done_at};
+  DATA.tasks.push(nt); moved.forEach(k=>{ k.parent=nid; });
+  if(t.status!=='done'){ t.status='done'; t.done_at=nowStamp(); }
+  EXTOPEN=false; SEL=nid; CUR=new Date(ds+'T00:00');
+  renderDrw(); renderBoard(); render();
+  toast('Sesi ini ditutup \u00b7 lanjut '+fmtDay(ds), function(){
+    DATA.tasks=DATA.tasks.filter(x=>x.id!==nid); moved.forEach(k=>{ k.parent=t.id; });
+    t.status=prev.status; t.done_at=prev.done_at; SEL=t.id; renderDrw(); renderBoard(); render(); });
+}
+function historyHtml(c){
+  const chain=sessionsOf(c); if(chain.length<2) return '';
+  return '<label>Riwayat sesi</label><div class="hist">'+chain.map(function(s,i){
+    const st=KST[s.status]||KST.todo, me=s.id===c.id;
+    return '<button class="hrow'+(me?' me':'')+'" '+(me?'disabled':'onclick="openTask(\''+s.id+'\')"')+'>'+
+      '<span class="hn">Sesi '+(i+1)+'</span>'+
+      '<span class="hd">'+(s.due?esc(fmtDay(s.due)):'tanpa tanggal')+'</span>'+
+      '<span class="sdot" style="background:'+st[1]+'"></span>'+
+      ((s.detail||'').trim()&&!me?'<span class="hx">'+esc(s.detail)+'</span>':
+        (me?'<span class="hx muted">sesi ini</span>':'<span class="hx muted">tanpa catatan</span>'))+
+      '</button>'; }).join('')+'</div>';
+}
+
 /* ---- detail drawer ---- */
 function showDrw(){ document.getElementById('ov').classList.add('on');
   document.getElementById('drw').classList.add('on'); }
-function openTask(id){ tipHide(); if(DAYSEL){ RETDAY=DAYSEL; DAYSEL=null; }
+function openTask(id){ tipHide(); EXTOPEN=false; if(DAYSEL){ RETDAY=DAYSEL; DAYSEL=null; }
   SEL=id; renderDrw(); showDrw(); }
 function openDay(ds){ tipHide(); dropIfBlank(SEL); SEL=null; RETDAY=null; DAYSEL=ds; renderDrw(); showDrw(); }
 function jumpTo(id){ const t=tById(id); if(t&&t.due){ CUR=new Date(t.due+'T00:00'); renderBoard(); } openTask(id); }
@@ -1298,7 +1425,9 @@ function renderDrw(){
       '<button class="btn del" onclick="tdel(\'' + k.id + '\')">&#10005;</button></div>'; }).join('');
   el.innerHTML=
     '<h3>'+(RETDAY?'<button class="btn x" style="margin:0" onclick="backToDay()" aria-label="kembali">&lsaquo;</button> ':'')+
-      'Rincian to-do <button class="btn x" onclick="closeDrw()" aria-label="tutup">&#10005;</button></h3>'+
+      'Rincian to-do'+(sessionNo(c)>1?' <span class="chip">sesi '+sessionNo(c)+'</span>':'')+
+      ' <span class="dsync" id="dsync"></span>'+
+      '<button class="btn x" onclick="closeDrw()" aria-label="tutup">&#10005;</button></h3>'+
     '<label>Judul</label>'+
     '<input value="'+esc(c.title)+'" placeholder="mis. Cari venue" oninput="tupd(\'' + c.id + '\',\'title\',this.value)">'+
     '<label>Status</label><div class="stsel">'+sts+'</div>'+
@@ -1326,13 +1455,18 @@ function renderDrw(){
     '<label>Kategori</label>'+
     '<input value="'+esc(c.category)+'" placeholder="mis. akad" oninput="tupd(\'' + c.id + '\',\'category\',this.value)">'+
     '<label>Catatan</label>'+
-    '<textarea style="min-height:90px" placeholder="catatan..." oninput="tupd(\'' + c.id + '\',\'detail\',this.value)">'+esc(c.detail)+'</textarea>'+
+    '<textarea style="min-height:90px" placeholder="hasilnya apa? catatan ini masuk ke Keuangan \u203a Catatan saat to-do Selesai" '+
+      'oninput="tupd(\'' + c.id + '\',\'detail\',this.value)">'+esc(c.detail)+'</textarea>'+
+    historyHtml(c)+
     '<label>Checklist '+(ks.length?'<span class="chip pr">'+done+'/'+ks.length+'</span>':'')+'</label>'+
     '<div>'+(ck||'<span class="muted" style="font-size:12px">belum ada.</span>')+'</div>'+
     '<div class="trow">'+
       '<button class="btn" onclick="addCk(\'' + c.id + '\')">+ checklist</button>'+
+      (DATA.tasks.some(x=>x.cont_of===c.id)?'':
+        '<button class="btn" onclick="EXTOPEN=!EXTOPEN;renderDrw()">&#8618; Lanjutkan di hari lain</button>')+
       '<button class="btn del" onclick="tdel(\'' + c.id + '\');closeDrw()">Hapus to-do</button>'+
-    '</div>';
+    '</div>'+(EXTOPEN?extendBox(c):'');
+  paintSave();
 }
 /* edits that change where/how a pill is drawn redraw the calendar too; typing
    in a text field only updates DATA, so the input never loses focus. */
@@ -1395,7 +1529,12 @@ function setWho(id,name,on){
   if(!on && i!==-1) cur.splice(i,1);
   t.remind_to=cur.join(','); renderDrw();
 }
-function setStatus(id,v){ tupd(id,'status',v); renderDrw(); renderBoard(); }
+function setStatus(id,v){ const t=tById(id); if(!t) return;
+  if(v==='done' && t.status!=='done') t.done_at=nowStamp();
+  if(v!=='done') t.done_at='';
+  t.status=v; renderDrw(); renderBoard(); render();
+  if(v==='done' && (t.detail||'').trim()) toast('Selesai \u00b7 catatannya masuk ke Keuangan \u203a Catatan');
+}
 /* Moving the start moves a range's end with it, so the run keeps its length.
    Clearing the start clears the end, so an old range can't come back later. */
 function setDue(id,v){ const t=tById(id); if(!t) return;
@@ -1411,7 +1550,8 @@ function shiftTask(id,n){ const t=tById(id); if(!t||!t.due) return;
   renderDrw(); renderBoard();
   toast('Dipindah ke '+fmtDay(t.due)); }
 function clearDates(id){ const t=tById(id); if(!t) return; t.due=''; t.due_end=''; renderDrw(); renderBoard(); }
-function tgl(id,on){ const t=tById(id); if(!t) return; t.status=on?'done':'todo'; renderDrw(); renderBoard(); }
+function tgl(id,on){ const t=tById(id); if(!t) return; t.status=on?'done':'todo';
+  t.done_at=on?nowStamp():''; renderDrw(); renderBoard(); }
 function addTask(due){ const id=tmp(); NEWT.add(id);
   DATA.tasks.push({id:id,title:'',detail:'',status:'todo',category:'',due:due||'',parent:''});
   renderBoard(); openTask(id);
@@ -1673,7 +1813,7 @@ function repaint(){
   render();
   if(VIEW==='kan') renderBoard(); else updateKanCount();
   if(VIEW==='set') renderSettings();
-  const n=document.getElementById('notes'); if(n && document.activeElement!==n) n.value=DATA.notes||'';
+  renderJournal();
   if(SEL){ if(tById(SEL)) renderDrw(); else closeDrw(); }
 }
 document.addEventListener('focusout',function(){
@@ -1719,6 +1859,8 @@ function paintSave(){
   else if(SAVING){ cls='busy'; txt='Menyimpan\u2026'; }
   else if(TIMER && buildPatch()){ cls='busy'; txt='Ada perubahan\u2026'; }
   el.className='sync '+cls; el.querySelector('.st').textContent=txt;
+  const d=document.getElementById('dsync');
+  if(d){ d.className='dsync '+cls; d.textContent=cls==='ok'?'tersimpan \u2713':txt.toLowerCase(); }
 }
 
 async function poll(force){
@@ -1763,7 +1905,6 @@ function toast(msg, undo){
   TOASTT=setTimeout(function(){ t.classList.remove('on'); }, undo?8000:2500);
 }
 
-document.getElementById('notes').value = DATA.notes || '';
 takeBase(DATA); MAILBASE=JSON.stringify(mailPayload());
 render(); paintSave();
 (function(){                         /* open where the link -- or last visit -- points */

@@ -484,14 +484,34 @@ def tool_email_test(to: str = "") -> str:
     return f"terkirim ke {names}" if ok else f"gagal kirim ke {names}: {detail}"
 
 
+def tool_task_extend(id: str, due: str, time: str = "") -> str:
+    """Close today's session of a to-do and continue it on another day."""
+    r = get_plan().task_extend(id, due, time)
+    if not r:
+        return f"error: no to-do matching '{id}' (pakai task_board untuk lihat id)"
+    old, new = r
+    return (f"ok, sesi '{old['title']}' ditutup (catatannya masuk jurnal); lanjutan dibuat "
+            f"{new['due']}{' jam ' + new['time'] if new.get('time') else ''} (id {new['id']})"
+            f"{_remind_note(new)}")
+
+
 def tool_task_delete(id: str) -> str:
     """Delete a to-do (and its checklist) by id or title."""
     return f"ok, dihapus: {id}" if get_plan().task_delete(id) else f"error: no to-do matching '{id}'"
 
 
 def tool_notes_read() -> str:
-    """Read the freeform notes attached to the plan."""
-    return get_plan().read().get("notes", "").strip() or "(no notes yet)"
+    """The Catatan journal: notes of finished to-dos (oldest first), then any
+    older free-form notes."""
+    out = []
+    for t in get_plan().journal():
+        when = str(t.get("done_at") or "")[:10]
+        out.append(f"[{when}] {t.get('title')}" + (" (lanjutan)" if t.get("cont_of") else "")
+                   + f"\n  {str(t.get('detail')).strip()}")
+    legacy = get_plan().read().get("notes", "").strip()
+    if legacy:
+        out.append("[catatan lama]\n" + legacy)
+    return "\n".join(out) or "(belum ada catatan -- catatan muncul saat to-do ditandai selesai)"
 
 
 def tool_notes_append(text: str) -> str:
@@ -522,6 +542,7 @@ TOOLS = {
     "task_update": tool_task_update,
     "task_delete": tool_task_delete,
     "reminder_list": tool_reminder_list,
+    "task_extend": tool_task_extend,
     "email_test": tool_email_test,
     "notes_read": tool_notes_read,
     "notes_append": tool_notes_append,
@@ -778,6 +799,25 @@ TOOL_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "task_extend",
+            "description": "Continue a to-do on another day when it wasn't finished today "
+                           "('diskusi seserahan dilanjut Sabtu'). Closes today's session (its note "
+                           "is kept), creates a follow-up session on `due` with the same title, "
+                           "and moves unfinished checklist items to it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "to-do id or title"},
+                    "due": {"type": "string", "description": "YYYY-MM-DD of the follow-up"},
+                    "time": {"type": "string", "description": "HH:MM, optional"},
+                },
+                "required": ["id", "due"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "reminder_list",
             "description": "List the to-do email reminders that are still queued, soonest "
                            "first. Use for 'pengingat apa aja', 'kapan aku diingetin', "
@@ -815,7 +855,9 @@ TOOL_SCHEMA = [
         "type": "function",
         "function": {
             "name": "notes_read",
-            "description": "Read the freeform wedding notes (non-money stuff: ideas, vendors, to-dos).",
+            "description": "Read the wedding journal: notes of FINISHED to-dos in the order they "
+                           "were finished, then older free-form notes. Use for 'catatan apa aja', "
+                           "'kemarin diskusi apa', 'hasil diskusi soal X'.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -823,7 +865,9 @@ TOOL_SCHEMA = [
         "type": "function",
         "function": {
             "name": "notes_append",
-            "description": "Add a line to the freeform wedding notes.",
+            "description": "Add a line to the OLD free-form notes. Prefer putting a note on the "
+                           "relevant to-do instead (task_update detail=...): the journal is built "
+                           "from finished to-dos' notes.",
             "parameters": {
                 "type": "object",
                 "properties": {"text": {"type": "string"}},

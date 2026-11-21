@@ -366,11 +366,53 @@ class PlanStore:
             tid = _resolve_task(data["tasks"], task_id)
             for t in data["tasks"]:
                 if t.get("id") == tid:
+                    was = t.get("status")
                     t.update({k: v for k, v in fields.items() if v is not None and v != ""})
+                    if t.get("status") == "done" and was != "done":
+                        t["done_at"] = _now_iso()
                     t.update(_clean_task(t))
                     self._write_locked(data)
                     return t
         return None
+
+    def task_extend(self, task_id: str, due: str, time: str = "") -> tuple | None:
+        """Close today's session of a to-do and continue it on `due`.
+
+        The current session is marked done (its note stays and lands in the
+        journal). A new session is created with the same title, category and
+        reminder settings, pointing back via `cont_of`. Checklist items that
+        are still open move to the new session; finished ones stay behind.
+        Returns (closed_session, new_session) or None if there is no such to-do.
+        """
+        with self._lock:
+            data = self._read_locked()
+            tid = _resolve_task(data["tasks"], task_id)
+            cur = next((t for t in data["tasks"] if t.get("id") == tid and not t.get("parent")), None)
+            if not cur:
+                return None
+            new = _clean_task({
+                "id": uuid.uuid4().hex[:8], "title": cur.get("title"), "status": "todo",
+                "category": cur.get("category"), "due": due, "time": time or cur.get("time"),
+                "remind": cur.get("remind"), "remind_to": cur.get("remind_to"),
+                "cont_of": cur.get("id"),
+            })
+            data["tasks"].append(new)
+            for k in data["tasks"]:
+                if k.get("parent") == cur.get("id") and k.get("status") != "done":
+                    k["parent"] = new["id"]
+            if cur.get("status") != "done":
+                cur["status"] = "done"
+                cur["done_at"] = _now_iso()
+            cur.update(_clean_task(cur))
+            self._write_locked(data)
+            return cur, new
+
+    def journal(self) -> list[dict]:
+        """Notes of finished to-dos, oldest first -- the Catatan journal."""
+        tasks = self.read().get("tasks") or []
+        done = [t for t in tasks if not t.get("parent") and t.get("status") == "done"
+                and str(t.get("detail") or "").strip()]
+        return sorted(done, key=lambda t: str(t.get("done_at") or ""))
 
     def task_delete(self, task_id: str) -> bool:
         """Delete a task and any checklist items under it."""
@@ -411,6 +453,8 @@ class PlanStore:
             kids = [k for k in tasks if k.get("parent") == c["id"]]
             done = sum(1 for k in kids if k.get("status") == "done")
             bits = [f"[{c['id']}] {c['title']}", f"<{TASK_LABELS.get(c.get('status'), '?')}>"]
+            if c.get("cont_of"):
+                bits.append("(lanjutan)")
             if c.get("due_end") and c.get("due_end") != due:
                 bits.append(f"s/d {c['due_end']} (tiap hari)")
             if kids:
@@ -596,7 +640,29 @@ def _clean_task(t: dict) -> dict:
         # bookkeeping for the scheduler: the send-time it last mailed for.
         "notified": str(t.get("notified") or "").strip(),
         "parent": str(t.get("parent") or "").strip(),
+        # A to-do can be continued on another day: the follow-up session
+        # points back at the one it continues. Sessions form a chain.
+        "cont_of": str(t.get("cont_of") or "").strip(),
+        # When it was marked Selesai -- orders the Catatan journal.
+        "done_at": _done_at(status if status in TASK_STATES else "todo", t),
     }
+
+
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _done_at(status: str, t: dict) -> str:
+    """Keep a finish time only while the to-do is done. A done to-do from
+    before this field existed falls back to its own date, so old ones sort
+    where they happened rather than all landing on the day of the upgrade."""
+    if status != "done":
+        return ""
+    v = str(t.get("done_at") or "").strip()
+    if v:
+        return v
+    due = str(t.get("due") or "").strip()
+    return f"{due}T00:00:00" if due else _now_iso()
 
 
 def _resolve_task(tasks: list[dict], ref: str) -> str:
